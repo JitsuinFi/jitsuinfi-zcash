@@ -31,6 +31,26 @@ pub fn sign_register_entry(
     )
 }
 
+/// Same as [`sign_register_entry`], carrying the tag of the buyer's new history certificate.
+pub fn sign_register_entry_with_history(
+    supplier_ephemeral: &SigningKey,
+    nullifier: [u8; 32],
+    financier_pk: &[u8; 32],
+    salt: &[u8; 32],
+    discount_bucket: u8,
+    tenor_bucket: u8,
+    history_tag: [u8; 32],
+) -> BoardEntry {
+    BoardEntry::sign_with_history(
+        supplier_ephemeral,
+        nullifier,
+        financier_commitment(financier_pk, salt),
+        discount_bucket,
+        tenor_bucket,
+        history_tag,
+    )
+}
+
 /// Every advance receipt for `nullifier` received by the supplier wallet, with its verdict
 /// (signed by `financier_pk`, amount equal to the received output).
 pub fn received_advances(

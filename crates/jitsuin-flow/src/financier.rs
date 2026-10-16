@@ -37,6 +37,9 @@ pub struct Deal {
     pub advance_zat: u64,
     /// Confirmations of the board entry required before paying (at least 1).
     pub min_confirmations: u32,
+    /// Tag of the buyer's new history certificate (HNK-20). When set, the register entry must
+    /// carry it, so the invoice joins the buyer's anchored history.
+    pub history_tag: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +265,9 @@ impl Flow {
         if entry.financier_commitment != self.deal.financier_commitment {
             return Err(Error::EntryMismatch("financier commitment differs"));
         }
+        if self.deal.history_tag.is_some() && entry.history_tag != self.deal.history_tag {
+            return Err(Error::EntryMismatch("history tag missing or wrong"));
+        }
         entry
             .verify(&self.deal.invoice.supplier_ephemeral_pk)
             .map_err(|_| Error::EntryMismatch("supplier signature does not verify"))
@@ -477,6 +483,7 @@ mod tests {
             supplier_address: "utest1supplier".into(),
             advance_zat: 950_000,
             min_confirmations,
+            history_tag: None,
         }
     }
 
@@ -692,6 +699,27 @@ mod tests {
             ));
             assert_eq!(flow.state(), &State::AwaitSupplierSignature);
         }
+    }
+
+    #[test]
+    fn history_tag_is_required_when_the_deal_has_one() {
+        let mut d = deal(1);
+        d.history_tag = Some([0x77; 32]);
+        let mut flow = Flow::new(d).unwrap();
+        flow.apply(board(&[], 1)).unwrap();
+        // an untagged entry, or one with another tag, is refused
+        for e in [
+            entry(ours()),
+            BoardEntry::sign_with_history(&supplier(), n(), ours(), 2, 3, [0x78; 32]),
+        ] {
+            assert!(matches!(
+                flow.apply(Event::SupplierSigned(e)),
+                Err(Error::EntryMismatch("history tag missing or wrong"))
+            ));
+        }
+        let tagged = BoardEntry::sign_with_history(&supplier(), n(), ours(), 2, 3, [0x77; 32]);
+        flow.apply(Event::SupplierSigned(tagged)).unwrap();
+        assert!(matches!(flow.state(), State::Register { .. }));
     }
 
     #[test]

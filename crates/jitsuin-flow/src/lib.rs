@@ -5,12 +5,15 @@
 //! - [`buyer`]: repayment request (ZIP-321 URI and QR) with a buyer-signed receipt.
 //! - [`settlement`]: financier detects the repayment, records it as settled, optionally posts a
 //!   `settled` entry to the board.
+//! - [`history`]: the buyer's history chain checked against the board and the minimum standard
+//!   before a new invoice is registered (HNK-20).
 
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod buyer;
 pub mod financier;
+pub mod history;
 pub mod receipts;
 pub mod settlement;
 pub mod supplier;
@@ -35,6 +38,9 @@ pub enum Error {
         paid_zat: u64,
         due_zat: u64,
     },
+    History(jitsuin_board::history::HistoryError),
+    /// The buyer's history does not meet the financier's minimum standard.
+    BelowStandard(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -53,6 +59,8 @@ impl fmt::Display for Error {
             Error::NotSettled { paid_zat, due_zat } => {
                 write!(f, "not settled: {paid_zat} of {due_zat} zat paid")
             }
+            Error::History(e) => write!(f, "history: {e}"),
+            Error::BelowStandard(m) => write!(f, "below minimum standard: {m}"),
         }
     }
 }
