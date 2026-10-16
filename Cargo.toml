@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/hanko-core"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.99"
+
+[workspace.dependencies]
+# D-10: ed25519-dalek 3.0.0 conflicts with the sha2 pin pulled in by the Zcash crates; stay on 2.2.x.
+ed25519-dalek = "2.2"

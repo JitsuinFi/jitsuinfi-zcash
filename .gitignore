@@ -1,0 +1,17 @@
+# build output
+/target
+
+# secrets and wallet material: never commit
+*.age
+*.seed
+*.mnemonic
+.env
+.env.*
+*.sqlite
+*.sqlite3
+*.db
+wallet-*/
+.hanko-tes/
+
+# local tooling
+.DS_Store
