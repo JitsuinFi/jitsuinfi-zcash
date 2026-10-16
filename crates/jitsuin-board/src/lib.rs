@@ -16,6 +16,7 @@ use jitsuin_core::{
 };
 use jitsuin_wallet::{Devtool, Memo};
 
+pub mod history;
 pub mod lwd;
 
 #[derive(Debug)]

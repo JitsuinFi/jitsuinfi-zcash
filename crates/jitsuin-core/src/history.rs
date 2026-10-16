@@ -4,16 +4,17 @@
 //!   buyer's identity key and one key per invoice by index, so the public board cannot link the
 //!   invoices of one buyer.
 //! - **Chain.** For every financed invoice the identity key signs a history certificate: index,
-//!   invoice key, N, amount, due date, financier key, and the hash of the previous certificate.
+//!   invoice key, supplier key, N, amount, due date, financier key, and the hash of the previous
+//!   certificate. The supplier key lets a verifier ignore forged entries that copy a tag.
 //! - **Anchor.** The register entry of the invoice carries the certificate's successor tag
 //!   `BLAKE2b-256("JitsuinHistTag__", identity_pk ‖ hash of the previous certificate)`. A chain the
 //!   buyer renumbers or forks does not match the tags on the board, two entries with the same tag
 //!   expose equivocation, and a hidden later invoice shows up as an existing successor of the
 //!   disclosed head. Outsiders cannot compute the tags, except the first one of each identity.
 //!
-//! Certificate layout (245 bytes): magic `JTSH` (4), version (1), index (4, LE), invoice key (32),
-//! N (32), amount_zat (8, LE), due_date (4, LE), financier key (32), previous hash (32), identity
-//! key (32), identity signature over the preceding bytes (64).
+//! Certificate layout (277 bytes): magic `JTSH` (4), version (1), index (4, LE), invoice key (32),
+//! supplier key (32), N (32), amount_zat (8, LE), due_date (4, LE), financier key (32), previous
+//! hash (32), identity key (32), identity signature over the preceding bytes (64).
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
@@ -23,7 +24,7 @@ use crate::nullifier::nullifier;
 
 pub const HISTORY_MAGIC: &[u8; 4] = b"JTSH";
 pub const HISTORY_VERSION: u8 = 1;
-pub const HISTORY_SIGNED_LEN: usize = 4 + 1 + 4 + 32 + 32 + 8 + 4 + 32 + 32 + 32;
+pub const HISTORY_SIGNED_LEN: usize = 4 + 1 + 4 + 32 + 32 + 32 + 8 + 4 + 32 + 32 + 32;
 pub const HISTORY_CERT_LEN: usize = HISTORY_SIGNED_LEN + 64;
 const KEY_PERSONALIZATION: &[u8; 16] = b"JitsuinBuyerKey_";
 const CERT_HASH_PERSONALIZATION: &[u8; 16] = b"JitsuinHistory__";
@@ -69,6 +70,8 @@ impl BuyerIdentity {
 pub struct HistoryCert {
     pub index: u32,
     pub invoice_pk: [u8; 32],
+    /// Supplier's per-invoice key (verifies the register entry that carries the tag).
+    pub supplier_pk: [u8; 32],
     pub nullifier: [u8; 32],
     pub amount_zat: u64,
     pub due_date: u32,
@@ -100,6 +103,7 @@ impl HistoryCert {
         let mut cert = HistoryCert {
             index,
             invoice_pk: invoice.buyer_pk,
+            supplier_pk: invoice.supplier_ephemeral_pk,
             nullifier: nullifier(invoice)?,
             amount_zat: invoice.amount_zat,
             due_date: invoice.due_date,
@@ -118,12 +122,13 @@ impl HistoryCert {
         out[4] = HISTORY_VERSION;
         out[5..9].copy_from_slice(&self.index.to_le_bytes());
         out[9..41].copy_from_slice(&self.invoice_pk);
-        out[41..73].copy_from_slice(&self.nullifier);
-        out[73..81].copy_from_slice(&self.amount_zat.to_le_bytes());
-        out[81..85].copy_from_slice(&self.due_date.to_le_bytes());
-        out[85..117].copy_from_slice(&self.financier_pk);
-        out[117..149].copy_from_slice(&self.prev);
-        out[149..181].copy_from_slice(&self.identity_pk);
+        out[41..73].copy_from_slice(&self.supplier_pk);
+        out[73..105].copy_from_slice(&self.nullifier);
+        out[105..113].copy_from_slice(&self.amount_zat.to_le_bytes());
+        out[113..117].copy_from_slice(&self.due_date.to_le_bytes());
+        out[117..149].copy_from_slice(&self.financier_pk);
+        out[149..181].copy_from_slice(&self.prev);
+        out[181..213].copy_from_slice(&self.identity_pk);
         out
     }
 
@@ -172,6 +177,7 @@ impl HistoryCert {
         Ok(HistoryCert {
             index: u32::from_le_bytes(r.array()?),
             invoice_pk: r.array()?,
+            supplier_pk: r.array()?,
             nullifier: r.array()?,
             amount_zat: u64::from_le_bytes(r.array()?),
             due_date: u32::from_le_bytes(r.array()?),
@@ -288,10 +294,10 @@ mod tests {
         assert_eq!(certs[1].tag(), next_tag(&id_pk, Some(&certs[0])));
         assert_eq!(certs[2].prev, certs[1].hash());
         let bytes = certs[1].to_bytes();
-        assert_eq!(bytes.len(), 245);
+        assert_eq!(bytes.len(), 277);
         assert_eq!(HistoryCert::from_bytes(&bytes).unwrap(), certs[1]);
         assert_eq!(
-            HistoryCert::from_bytes(&bytes[..244]),
+            HistoryCert::from_bytes(&bytes[..276]),
             Err(Error::Truncated)
         );
     }
