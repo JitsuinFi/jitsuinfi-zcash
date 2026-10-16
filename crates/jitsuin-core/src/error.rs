@@ -21,6 +21,10 @@ pub enum Error {
     UnsupportedVersion(u8),
     /// Unknown registry entry kind.
     UnknownEntryKind(u8),
+    /// Unknown receipt kind.
+    UnknownReceiptKind(u8),
+    /// Receipt is signed by a different key than expected.
+    UnexpectedSigner,
     /// Memo does not start with the ZIP-302 arbitrary-data marker `0xFF`.
     NotArbitraryDataMemo,
     /// Input ended before all fields were read.
@@ -43,6 +47,8 @@ impl fmt::Display for Error {
             Error::BadMagic => write!(f, "unknown magic bytes"),
             Error::UnsupportedVersion(v) => write!(f, "unsupported format version {v}"),
             Error::UnknownEntryKind(k) => write!(f, "unknown registry entry kind 0x{k:02x}"),
+            Error::UnknownReceiptKind(k) => write!(f, "unknown receipt kind 0x{k:02x}"),
+            Error::UnexpectedSigner => write!(f, "receipt signed by an unexpected key"),
             Error::NotArbitraryDataMemo => write!(f, "memo is not ZIP-302 arbitrary data (0xFF)"),
             Error::Truncated => write!(f, "input truncated"),
             Error::TrailingBytes => write!(f, "unexpected trailing bytes"),

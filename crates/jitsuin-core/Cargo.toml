@@ -1,10 +1,11 @@
 [package]
 name = "jitsuin-core"
 version = "0.1.0"
-description = "JitsuinFi core: canonical invoices, buyer signatures and shielded registry entries"
+description = "JitsuinFi core: canonical invoices, buyer signatures, shielded registry entries and signed receipts"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
 
 [dependencies]
+blake2b_simd.workspace = true
 ed25519-dalek.workspace = true

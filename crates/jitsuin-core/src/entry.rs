@@ -146,6 +146,20 @@ impl BoardEntry {
     }
 }
 
+/// `financier_commitment = BLAKE2b-256(financier_pk ‖ salt)`. The salt stays with the financier and
+/// the supplier, so the board does not reveal who financed the invoice.
+pub fn financier_commitment(financier_pk: &[u8; 32], salt: &[u8; 32]) -> [u8; 32] {
+    let hash = blake2b_simd::Params::new()
+        .hash_length(32)
+        .to_state()
+        .update(financier_pk)
+        .update(salt)
+        .finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hash.as_bytes());
+    out
+}
+
 fn signed_part(
     kind: EntryKind,
     nullifier: &[u8; 32],

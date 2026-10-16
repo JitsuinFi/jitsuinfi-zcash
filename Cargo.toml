@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/jitsuin-core", "crates/jitsuin-wallet", "crates/jitsuin-board"]
+members = [
+    "crates/jitsuin-core",
+    "crates/jitsuin-wallet",
+    "crates/jitsuin-board",
+    "crates/jitsuin-flow",
+]
 
 [workspace.package]
 edition = "2021"
@@ -9,3 +14,5 @@ rust-version = "1.99"
 [workspace.dependencies]
 # D-10: ed25519-dalek 3.0.0 conflicts with the sha2 pin pulled in by the Zcash crates; stay on 2.2.x.
 ed25519-dalek = "2.2"
+# D-10 pin.
+blake2b_simd = "=1.0.5"

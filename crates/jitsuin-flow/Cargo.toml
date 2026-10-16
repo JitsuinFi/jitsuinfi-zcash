@@ -1,0 +1,13 @@
+[package]
+name = "jitsuin-flow"
+version = "0.1.0"
+description = "JitsuinFi role flows: financier check, register, confirm, advance; supplier receipt verification"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ed25519-dalek.workspace = true
+jitsuin-board = { path = "../jitsuin-board" }
+jitsuin-core = { path = "../jitsuin-core" }
+jitsuin-wallet = { path = "../jitsuin-wallet" }

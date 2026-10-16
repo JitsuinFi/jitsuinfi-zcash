@@ -1,4 +1,5 @@
-//! Minimal lightwalletd gRPC client: only what the scanner needs (block transaction order).
+//! Minimal lightwalletd gRPC client: only what the scanner and the flows need (block transaction
+//! order, chain tip).
 //!
 //! gRPC over HTTP/2 with hand-written protobuf, so no protoc or generated code is required
 //! (spike SPK-08 proved `GetBlock` returns the transaction index of every transaction).
@@ -9,21 +10,49 @@ pub const TESTNET: &str = "https://testnet.zec.rocks:443";
 pub const MAINNET: &str = "https://zec.rocks:443";
 
 const GET_BLOCK: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlock";
+const GET_LATEST_BLOCK: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestBlock";
 
 /// Txids (display hex, as shown by wallets and explorers) of one block, in block order.
 pub fn block_txids(endpoint: &str, height: u32) -> Result<Vec<String>, Error> {
     let mut msg = vec![0x08];
     put_varint(&mut msg, u64::from(height));
+    let block = unary(endpoint, GET_BLOCK, &msg)?;
+    if block.is_empty() {
+        return Err(Error::Lightwalletd(format!(
+            "empty GetBlock response for height {height}"
+        )));
+    }
+    parse_compact_block_txids(&block)
+}
+
+/// Height of the chain tip seen by lightwalletd (`GetLatestBlock`), used to count confirmations.
+pub fn latest_height(endpoint: &str) -> Result<u32, Error> {
+    parse_block_id_height(&unary(endpoint, GET_LATEST_BLOCK, &[])?)
+}
+
+/// `BlockID { height (1), hash (2) }` → height.
+pub fn parse_block_id_height(block_id: &[u8]) -> Result<u32, Error> {
+    fields(block_id)?
+        .into_iter()
+        .find_map(|(f, v)| match (f, v) {
+            (1, Value::Varint(h)) => u32::try_from(h).ok(),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Lightwalletd("BlockID without height".into()))
+}
+
+/// One unary gRPC call; returns the response message without the 5-byte gRPC frame header.
+fn unary(endpoint: &str, method: &str, msg: &[u8]) -> Result<Vec<u8>, Error> {
     let mut body = vec![0u8];
     body.extend_from_slice(&(msg.len() as u32).to_be_bytes());
-    body.extend_from_slice(&msg);
+    body.extend_from_slice(msg);
 
     let client = reqwest::blocking::Client::builder()
         .http2_prior_knowledge()
         .build()
         .map_err(|e| Error::Lightwalletd(e.to_string()))?;
     let resp = client
-        .post(format!("{}{}", endpoint.trim_end_matches('/'), GET_BLOCK))
+        .post(format!("{}{}", endpoint.trim_end_matches('/'), method))
         .header("content-type", "application/grpc")
         .header("te", "trailers")
         .body(body)
@@ -36,11 +65,9 @@ pub fn block_txids(endpoint: &str, height: u32) -> Result<Vec<String>, Error> {
         .bytes()
         .map_err(|e| Error::Lightwalletd(e.to_string()))?;
     if bytes.len() < 5 {
-        return Err(Error::Lightwalletd(format!(
-            "empty GetBlock response for height {height}"
-        )));
+        return Err(Error::Lightwalletd(format!("empty response from {method}")));
     }
-    parse_compact_block_txids(&bytes[5..])
+    Ok(bytes[5..].to_vec())
 }
 
 /// Extracts `vtx` (field 7) → `CompactTx { index (1), txid (2) }` from a CompactBlock message.
@@ -166,6 +193,16 @@ mod tests {
         assert_eq!(txids.len(), 2);
         assert_eq!(txids[0], format!("{}01", "00".repeat(31)));
         assert_eq!(txids[1], "02".repeat(32));
+    }
+
+    #[test]
+    fn parses_block_id_height() {
+        // height 4_509_045 (varint), hash 2 bytes
+        let mut id = vec![0x08];
+        put_varint(&mut id, 4_509_045);
+        id.extend_from_slice(&[0x12, 0x02, 0xab, 0xcd]);
+        assert_eq!(parse_block_id_height(&id).unwrap(), 4_509_045);
+        assert!(parse_block_id_height(&[0x12, 0x00]).is_err());
     }
 
     #[test]
