@@ -8,9 +8,11 @@
 pub mod entry;
 pub mod error;
 pub mod invoice;
+pub mod nullifier;
 pub mod receipt;
 
 pub use entry::{financier_commitment, settled_tag, BoardEntry, EntryKind, ENTRY_LEN, MEMO_LEN};
 pub use error::Error;
 pub use invoice::{sign_invoice, verify_invoice, Invoice};
+pub use nullifier::{document_hash, nullifier};
 pub use receipt::{Receipt, ReceiptKind, RECEIPT_LEN};
