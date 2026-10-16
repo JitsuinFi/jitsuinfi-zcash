@@ -1,7 +1,7 @@
 [package]
-name = "hanko-core"
+name = "jitsuin-core"
 version = "0.1.0"
-description = "Hanko core: canonical invoices, buyer signatures and shielded registry entries"
+description = "JitsuinFi core: canonical invoices, buyer signatures and shielded registry entries"
 edition.workspace = true
 rust-version.workspace = true
 publish = false

@@ -1,6 +1,6 @@
 use core::fmt;
 
-/// Errors returned by `hanko-core` encoding, decoding and verification.
+/// Errors returned by `jitsuin-core` encoding, decoding and verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Invoice ID is empty, longer than 32 bytes, or not printable ASCII.

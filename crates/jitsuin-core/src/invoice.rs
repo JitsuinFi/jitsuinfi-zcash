@@ -4,7 +4,7 @@
 //!
 //! | field                   | size |
 //! |-------------------------|------|
-//! | magic `HNKI`            | 4    |
+//! | magic `JTSI`            | 4    |
 //! | version                 | 1    |
 //! | invoice_id length       | 1    |
 //! | invoice_id (ASCII)      | 1-32 |
@@ -19,7 +19,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::error::Error;
 
-pub const INVOICE_MAGIC: &[u8; 4] = b"HNKI";
+pub const INVOICE_MAGIC: &[u8; 4] = b"JTSI";
 pub const INVOICE_VERSION: u8 = 1;
 pub const MAX_INVOICE_ID_LEN: usize = 32;
 

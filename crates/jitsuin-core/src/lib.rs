@@ -1,6 +1,6 @@
-//! Hanko core: canonical invoices, buyer signatures and shielded registry entries.
+//! JitsuinFi core: canonical invoices, buyer signatures and shielded registry entries.
 //!
-//! "Zcash stops double-spending. Hanko stops double-financing."
+//! "Zcash stops double-spending. JitsuinFi stops double-financing."
 //!
 //! Pure logic only (no network, no chain access). Zcash integration lives in separate crates.
 

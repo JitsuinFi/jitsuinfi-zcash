@@ -5,7 +5,7 @@
 //! | offset | field                                  | size |
 //! |--------|----------------------------------------|------|
 //! | 0      | memo marker `0xFF`                     | 1    |
-//! | 1      | magic `HNK1`                           | 4    |
+//! | 1      | magic `JTS1`                           | 4    |
 //! | 5      | kind                                   | 1    |
 //! | 6      | nullifier                              | 32   |
 //! | 38     | financier commitment                   | 32   |
@@ -23,7 +23,7 @@ use crate::invoice::Reader;
 
 pub const MEMO_LEN: usize = 512;
 pub const MEMO_ARBITRARY_DATA: u8 = 0xFF;
-pub const ENTRY_MAGIC: &[u8; 4] = b"HNK1";
+pub const ENTRY_MAGIC: &[u8; 4] = b"JTS1";
 /// Bytes covered by the supplier signature (memo offsets 1..72).
 pub const SIGNED_LEN: usize = 4 + 1 + 32 + 32 + 1 + 1;
 /// Encoded entry length including the memo marker.
