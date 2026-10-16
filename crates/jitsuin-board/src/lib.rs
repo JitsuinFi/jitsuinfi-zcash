@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use jitsuin_core::BoardEntry;
+use jitsuin_core::{settled_tag, BoardEntry, EntryKind};
 use jitsuin_wallet::{Devtool, Memo};
 
 pub mod lwd;
@@ -134,8 +134,9 @@ pub fn collect(
     Ok((records, rejected))
 }
 
-/// First valid entry for `nullifier` wins. Entries whose supplier signature does not verify with
-/// `supplier_ephemeral_pk` are ignored. Re-posting the same financier commitment is not a conflict.
+/// First valid register entry for `nullifier` wins. Entries whose supplier signature does not verify
+/// with `supplier_ephemeral_pk` are ignored. Re-posting the same financier commitment is not a
+/// conflict. Only register entries count; `settled` entries never block or conflict.
 pub fn lookup(
     records: &[BoardRecord],
     nullifier: &[u8; 32],
@@ -143,7 +144,10 @@ pub fn lookup(
 ) -> Lookup {
     let mut valid: Vec<BoardRecord> = Vec::new();
     let mut ignored_invalid = Vec::new();
-    for r in records.iter().filter(|r| &r.entry.nullifier == nullifier) {
+    for r in records
+        .iter()
+        .filter(|r| r.entry.kind == EntryKind::Register && &r.entry.nullifier == nullifier)
+    {
         if r.entry.verify(supplier_ephemeral_pk).is_ok() {
             valid.push(r.clone());
         } else {
@@ -170,6 +174,21 @@ pub fn lookup(
             ignored_invalid,
         }
     }
+}
+
+/// First `settled` entry for `nullifier` signed by `financier_pk` (the key behind the financier
+/// commitment, shared with the supplier and the buyer). Unsigned or foreign entries are ignored.
+pub fn settled(
+    records: &[BoardRecord],
+    nullifier: &[u8; 32],
+    financier_pk: &[u8; 32],
+) -> Option<BoardRecord> {
+    let tag = settled_tag(nullifier);
+    records
+        .iter()
+        .filter(|r| r.entry.kind == EntryKind::Settled && r.entry.nullifier == tag)
+        .find(|r| r.entry.verify(financier_pk).is_ok())
+        .cloned()
 }
 
 /// Syncs the watch-only board wallet, fetches full transactions (memos), resolves tx order from
@@ -265,6 +284,43 @@ mod tests {
             lookup(&records, &[9; 32], &pk),
             Lookup::NotFound { .. }
         ));
+    }
+
+    #[test]
+    fn settled_entries_do_not_conflict_and_need_the_financier_signature() {
+        let supplier = SigningKey::from_bytes(&[1; 32]);
+        let financier = SigningKey::from_bytes(&[3; 32]);
+        let griefer = SigningKey::from_bytes(&[9; 32]);
+        let n = [7u8; 32];
+        let settled_by = |k: &SigningKey, height| BoardRecord {
+            txid: format!("s{height}"),
+            position: Position {
+                height,
+                tx_index: 0,
+                output_index: 0,
+            },
+            entry: BoardEntry::sign(k, EntryKind::Settled, settled_tag(&n), [0xBB; 32], 0, 0),
+        };
+        let mut records = vec![
+            rec(&supplier, 7, 0xBB, 100, 0, 0),
+            settled_by(&griefer, 110),
+            settled_by(&financier, 120),
+            // a settled-kind entry carrying N itself, even with a valid supplier signature,
+            // is not a register entry
+            BoardRecord {
+                entry: BoardEntry::sign(&supplier, EntryKind::Settled, n, [0xCC; 32], 0, 0),
+                ..rec(&supplier, 7, 0xCC, 130, 0, 0)
+            },
+        ];
+        records.sort_by_key(|r| r.position);
+        let pk = supplier.verifying_key().to_bytes();
+        assert!(matches!(
+            lookup(&records, &n, &pk),
+            Lookup::Registered { .. }
+        ));
+        let found = settled(&records, &n, &financier.verifying_key().to_bytes()).unwrap();
+        assert_eq!(found.txid, "s120");
+        assert!(settled(&records, &[8; 32], &financier.verifying_key().to_bytes()).is_none());
     }
 
     #[test]

@@ -2,11 +2,17 @@
 //!
 //! - [`financier`]: check the board, register the entry, wait for confirmation, pay the advance.
 //! - [`supplier`]: sign the entry for the agreed financier, verify the advance receipt.
+//! - [`buyer`]: repayment request (ZIP-321 URI and QR) with a buyer-signed receipt.
+//! - [`settlement`]: financier detects the repayment, records it as settled, optionally posts a
+//!   `settled` entry to the board.
 
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod buyer;
 pub mod financier;
+pub mod receipts;
+pub mod settlement;
 pub mod supplier;
 
 #[derive(Debug)]
@@ -23,6 +29,12 @@ pub enum Error {
         event: &'static str,
     },
     Timeout(&'static str),
+    Qr(String),
+    /// The repayment does not cover the amount due yet.
+    NotSettled {
+        paid_zat: u64,
+        due_zat: u64,
+    },
 }
 
 impl fmt::Display for Error {
@@ -37,6 +49,10 @@ impl fmt::Display for Error {
                 write!(f, "event {event} is not allowed in state {state}")
             }
             Error::Timeout(m) => write!(f, "timeout: {m}"),
+            Error::Qr(m) => write!(f, "qr: {m}"),
+            Error::NotSettled { paid_zat, due_zat } => {
+                write!(f, "not settled: {paid_zat} of {due_zat} zat paid")
+            }
         }
     }
 }

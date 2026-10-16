@@ -14,7 +14,8 @@
 //! | 72     | supplier signature over bytes 1..72    | 64   |
 //! | 136    | zero padding                           | 376  |
 //!
-//! The nullifier is an input here; how it is derived is HNK-02.T1.
+//! The nullifier is an input here; how it is derived is HNK-02.T1. A `settled` entry carries
+//! [`settled_tag`] instead of N and is signed by the financier (HNK-06.T4, proposal D-18).
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
@@ -154,6 +155,20 @@ pub fn financier_commitment(financier_pk: &[u8; 32], salt: &[u8; 32]) -> [u8; 32
         .to_state()
         .update(financier_pk)
         .update(salt)
+        .finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hash.as_bytes());
+    out
+}
+
+/// Board tag of a `settled` entry: `BLAKE2b-256(N ‖ "settled")`. Only holders of N can link it to
+/// the register entry, so the public board shows that some invoice was settled, not which one.
+pub fn settled_tag(nullifier: &[u8; 32]) -> [u8; 32] {
+    let hash = blake2b_simd::Params::new()
+        .hash_length(32)
+        .to_state()
+        .update(nullifier)
+        .update(b"settled")
         .finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(hash.as_bytes());

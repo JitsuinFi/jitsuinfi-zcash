@@ -169,18 +169,22 @@ impl Devtool {
     /// Builds one shielded transaction for all payments and broadcasts it. Returns the txid.
     /// Uses `--target-note-count 1` so change is not split (fewer outputs, lower fee; SPK-03).
     pub fn pay(&self, payments: &[Payment]) -> Result<String, Error> {
+        self.pay_uri(&zip321_uri(payments)?)
+    }
+
+    /// Pays a ZIP-321 payment request as given (for example the URI behind a QR code).
+    pub fn pay_uri(&self, uri: &str) -> Result<String, Error> {
         let identity = self
             .identity
             .as_ref()
             .ok_or_else(|| Error::InvalidPayment("identity file required for spending".into()))?;
-        let uri = zip321_uri(payments)?;
         let identity = identity.to_string_lossy().into_owned();
         let out = self.run(&[
             "pay",
             "--identity",
             &identity,
             "--payment-uri",
-            &uri,
+            uri,
             "--disable-confirmation",
             "--target-note-count",
             "1",
@@ -195,6 +199,8 @@ impl Devtool {
 }
 
 /// ZIP-321 payment request. Memos are base64url (no padding) of the raw memo bytes.
+/// A single payment uses the `zcash:<address>?amount=…` form, which mobile wallets scan most
+/// widely; several payments use indexed `address.N` parameters.
 pub fn zip321_uri(payments: &[Payment]) -> Result<String, Error> {
     if payments.is_empty() {
         return Err(Error::InvalidPayment("no payments".into()));
@@ -226,6 +232,11 @@ pub fn zip321_uri(payments: &[Payment]) -> Result<String, Error> {
             }
             params.push(format!("memo{suffix}={}", URL_SAFE_NO_PAD.encode(bytes)));
         }
+    }
+    if payments.len() == 1 {
+        let address = params.remove(0);
+        let address = address.trim_start_matches("address=");
+        return Ok(format!("zcash:{address}?{}", params.join("&")));
     }
     Ok(format!("zcash:?{}", params.join("&")))
 }
@@ -407,6 +418,13 @@ d759bbf2605a9cc9a220dbc0383645133c01bb722a38fc22a0f13b36355d2ac0
         ])
         .unwrap();
         assert_eq!(uri, "zcash:?address=utest1abc&amount=0.0001&memo=_wEC&address.1=utest1def&amount.1=1.5&memo.1=aGk");
+        let single = zip321_uri(&[Payment {
+            address: "utest1abc".into(),
+            amount_zat: 50_000,
+            memo: Some(PaymentMemo::Arbitrary(vec![0xFF, 1, 2])),
+        }])
+        .unwrap();
+        assert_eq!(single, "zcash:utest1abc?amount=0.0005&memo=_wEC");
     }
 
     #[test]

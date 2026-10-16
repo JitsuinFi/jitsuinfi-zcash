@@ -290,6 +290,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn settled_tag_vector() {
+        // Cross-checked with Python: hashlib.blake2b(b"\x07"*32 + b"settled", digest_size=32)
+        assert_eq!(
+            hex(&crate::entry::settled_tag(&[7; 32])),
+            "745dd5c7a8c41316f9c712e9aef7e458ece60e0a3ef1914ad47bee144c13a494"
+        );
+    }
+
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }

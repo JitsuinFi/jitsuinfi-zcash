@@ -11,3 +11,7 @@ ed25519-dalek.workspace = true
 jitsuin-board = { path = "../jitsuin-board" }
 jitsuin-core = { path = "../jitsuin-core" }
 jitsuin-wallet = { path = "../jitsuin-wallet" }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+
+[dev-dependencies]
+rqrr = { version = "0.11.0", default-features = false }
