@@ -1,0 +1,10 @@
+[package]
+name = "jitsuin-wallet"
+version = "0.1.0"
+description = "JitsuinFi wallet backend: wraps zcash-devtool for sync, ZIP-321 payments with memos, and transaction listing"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.22"

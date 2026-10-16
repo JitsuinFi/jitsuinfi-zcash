@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/jitsuin-core"]
+members = ["crates/jitsuin-core", "crates/jitsuin-wallet"]
 
 [workspace.package]
 edition = "2021"
