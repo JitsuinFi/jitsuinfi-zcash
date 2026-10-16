@@ -143,12 +143,27 @@ impl Devtool {
     }
 
     pub fn sync(&self) -> Result<(), Error> {
-        self.run(&["sync"]).map(|_| ())
+        self.run_retrying(&["sync"]).map(|_| ())
     }
 
     /// Fetches full transactions so memos become readable (compact blocks carry no memos, SPK-05).
     pub fn enhance(&self) -> Result<(), Error> {
-        self.run(&["enhance"]).map(|_| ())
+        self.run_retrying(&["enhance"]).map(|_| ())
+    }
+
+    /// Retries read-only commands after a transient lightwalletd transport error. Never used for
+    /// `pay`, where a retry could broadcast twice.
+    fn run_retrying(&self, args: &[&str]) -> Result<String, Error> {
+        let mut attempt = 0;
+        loop {
+            match self.run(args) {
+                Err(Error::Devtool(m)) if is_transient(&m) && attempt < RETRIES => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
+                }
+                other => return other,
+            }
+        }
     }
 
     pub fn default_address(&self) -> Result<String, Error> {
@@ -196,6 +211,13 @@ impl Devtool {
             .map(str::to_string)
             .ok_or_else(|| Error::Parse("txid not found in pay output".into()))
     }
+}
+
+const RETRIES: u32 = 3;
+
+fn is_transient(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("transport error") || m.contains("timed out") || m.contains("unavailable")
 }
 
 /// ZIP-321 payment request. Memos are base64url (no padding) of the raw memo bytes.
@@ -400,6 +422,13 @@ d759bbf2605a9cc9a220dbc0383645133c01bb722a38fc22a0f13b36355d2ac0
         assert!(txs[1].outputs[2].is_change);
         assert_eq!(txs[1].outputs[2].value_zat, 24_931_250);
         assert!(!txs[1].touches_transparent());
+    }
+
+    #[test]
+    fn transient_errors_are_recognised() {
+        assert!(is_transient("Error: transport error"));
+        assert!(is_transient("status: Unavailable, message: \"timed out\""));
+        assert!(!is_transient("Error: insufficient balance"));
     }
 
     #[test]
