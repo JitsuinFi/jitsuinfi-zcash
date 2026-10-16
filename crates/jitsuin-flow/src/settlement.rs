@@ -1,14 +1,14 @@
-//! Financier side of the repayment (HNK-06.T3, T4): detect the buyer's payment for N, record the
-//! invoice as settled, and optionally post a `settled` entry to the board.
+//! Financier side of the repayment (HNK-06.T3, HNK-19.T4): the watchdog matches the buyer's
+//! payment to N, derives the settlement status, and countersigns the buyer's claim into a
+//! `settled` entry with two signatures (D-19, DEV-08).
 //!
-//! The `settled` entry carries `settled_tag(N)` instead of N, a zero commitment field and the
-//! buckets of the register entry, signed by the financier key (proposal D-18). Outsiders cannot
-//! link it to the register entry; holders of N can, and verify it with the financier public key
-//! from the assignment letter.
+//! The watchdog is deterministic and needs only read access plus the financier key for the
+//! countersignature: a payment that is not on chain can never become `Settled`, whatever the
+//! buyer claims.
 
 use ed25519_dalek::SigningKey;
-use jitsuin_board::{scan, settled, BoardRecord};
-use jitsuin_core::{settled_tag, BoardEntry, EntryKind, ReceiptKind, ENTRY_LEN};
+use jitsuin_board::{lwd, scan, settled};
+use jitsuin_core::{ReceiptKind, Seal, SettledEntry, SettlementDoc, SETTLED_LATE, SETTLED_ON_TIME};
 use jitsuin_wallet::{Payment, PaymentMemo, WalletTx};
 
 use crate::financier::{Financier, ENTRY_POST_ZAT};
@@ -18,12 +18,18 @@ use crate::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Unpaid,
-    /// A valid repayment was seen but is not mined yet.
+    /// Valid payments cover the amount but are not mined yet.
     Pending,
-    /// Mined valid repayments cover part of the amount due.
+    /// Mined valid payments cover part of the amount, before the due date.
     Partial,
-    /// Mined valid repayments cover the amount due.
+    /// The buyer signed "I paid", but no matching payment covers the amount yet.
+    Claimed,
+    /// Mined valid payments cover the amount.
     Settled,
+    /// A buyer claim without a covering payment, past the due date plus the grace period.
+    Disputed,
+    /// Past the due date, not covered, and no buyer claim.
+    Overdue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,34 +43,63 @@ pub struct Repayment {
     pub payments: Vec<ReceivedReceipt>,
     /// Repayment receipts for N that failed verification; never counted.
     pub rejected: Vec<ReceivedReceipt>,
+    /// Buyer claims on the settlement document found in any repayment memo, valid or not.
+    pub claims: Vec<Seal>,
 }
 
 impl Repayment {
-    pub fn status(&self) -> Status {
+    pub fn status(&self, doc: &SettlementDoc, today: u32, grace_days: u32) -> Status {
+        let past_due = today > doc.due_date;
         if self.paid_zat >= self.due_zat {
             Status::Settled
+        } else if self.paid_zat + self.pending_zat >= self.due_zat {
+            Status::Pending
+        } else if !self.claims.is_empty() {
+            if today > doc.due_date.saturating_add(grace_days) {
+                Status::Disputed
+            } else {
+                Status::Claimed
+            }
+        } else if past_due {
+            Status::Overdue
         } else if self.paid_zat > 0 {
             Status::Partial
-        } else if self.pending_zat > 0 {
-            Status::Pending
         } else {
             Status::Unpaid
         }
     }
+
+    /// Height of the mined payment that brought the paid sum to the amount due.
+    pub fn covering_height(&self) -> Option<u32> {
+        let mut mined: Vec<&ReceivedReceipt> = self
+            .payments
+            .iter()
+            .filter(|p| p.mined_height.is_some())
+            .collect();
+        mined.sort_by_key(|p| p.mined_height);
+        let mut sum = 0;
+        for p in mined {
+            sum += p.received_zat;
+            if sum >= self.due_zat {
+                return p.mined_height;
+            }
+        }
+        None
+    }
 }
 
-/// Matches the financier wallet's received outputs to the invoice: repayment receipts for
-/// `nullifier` signed by `buyer_pk` (from the invoice).
-pub fn repayment(
-    txs: &[WalletTx],
-    nullifier: &[u8; 32],
-    buyer_pk: &[u8; 32],
-    due_zat: u64,
-) -> Repayment {
+/// Matches the financier wallet's received outputs to the settlement document: repayment receipts
+/// for N signed by `buyer_pk` (from the invoice), plus the buyer's claims in the same memos.
+pub fn repayment(txs: &[WalletTx], doc: &SettlementDoc, buyer_pk: &[u8; 32]) -> Repayment {
+    let found = received(txs, ReceiptKind::Repayment, &doc.nullifier, buyer_pk);
+    let mut claims: Vec<Seal> = Vec::new();
+    for s in found.iter().flat_map(|r| r.seals.iter()) {
+        if doc.verify_claim(s, buyer_pk).is_ok() && !claims.contains(s) {
+            claims.push(s.clone());
+        }
+    }
     let (payments, rejected): (Vec<_>, Vec<_>) =
-        received(txs, ReceiptKind::Repayment, nullifier, buyer_pk)
-            .into_iter()
-            .partition(ReceivedReceipt::is_valid);
+        found.into_iter().partition(ReceivedReceipt::is_valid);
     let sum = |mined: bool| {
         payments
             .iter()
@@ -73,72 +108,80 @@ pub fn repayment(
             .sum()
     };
     Repayment {
-        due_zat,
+        due_zat: doc.amount_zat,
         paid_zat: sum(true),
         pending_zat: sum(false),
         payments,
         rejected,
+        claims,
     }
 }
 
-/// `settled` entry for the invoice behind `register`, signed by the financier key.
-pub fn settled_entry(financier: &SigningKey, register: &BoardEntry) -> BoardEntry {
-    BoardEntry::sign(
-        financier,
-        EntryKind::Settled,
-        settled_tag(&register.nullifier),
-        // The register commitment is public; copying it would link the two entries.
-        [0; 32],
-        register.discount_bucket,
-        register.tenor_bucket,
-    )
+/// Countersigns the buyer's claim once the repayment is settled. `paid_date` (days) of the
+/// covering payment decides the flag: on time when it is not after the due date.
+pub fn settle(
+    financier: &SigningKey,
+    doc: &SettlementDoc,
+    buyer_pk: &[u8; 32],
+    repayment: &Repayment,
+    paid_date: u32,
+) -> Result<SettledEntry, Error> {
+    if repayment.paid_zat < repayment.due_zat {
+        return Err(Error::NotSettled {
+            paid_zat: repayment.paid_zat,
+            due_zat: repayment.due_zat,
+        });
+    }
+    let claim = repayment
+        .claims
+        .first()
+        .ok_or(Error::InvalidDeal("no buyer claim to countersign"))?;
+    let flag = if paid_date <= doc.due_date {
+        SETTLED_ON_TIME
+    } else {
+        SETTLED_LATE
+    };
+    Ok(SettledEntry::countersign(
+        doc, claim, buyer_pk, financier, flag,
+    )?)
 }
 
 impl Financier {
-    /// Syncs the financier wallet (memos included) and checks the repayment for `nullifier`.
-    pub fn repayment(
-        &self,
-        nullifier: &[u8; 32],
-        buyer_pk: &[u8; 32],
-        due_zat: u64,
-    ) -> Result<Repayment, Error> {
+    /// Syncs the financier wallet (memos included) and matches the repayment.
+    pub fn repayment(&self, doc: &SettlementDoc, buyer_pk: &[u8; 32]) -> Result<Repayment, Error> {
         self.wallet.sync()?;
         self.wallet.enhance()?;
-        Ok(repayment(
-            &self.wallet.list_tx()?,
-            nullifier,
-            buyer_pk,
-            due_zat,
-        ))
+        Ok(repayment(&self.wallet.list_tx()?, doc, buyer_pk))
     }
 
-    /// Posts the `settled` entry once mined repayments cover the amount due. Returns the txid, or
-    /// the txid of a valid `settled` entry by this financier that is already on the board.
+    /// Posts the two-signature `settled` entry once mined repayments cover the amount. Returns
+    /// the txid and the entry; if a valid one is already on the board, returns that one instead.
     pub fn post_settled(
         &self,
-        register: &BoardRecord,
+        doc: &SettlementDoc,
+        buyer_pk: &[u8; 32],
         repayment: &Repayment,
-    ) -> Result<String, Error> {
-        if repayment.status() != Status::Settled {
-            return Err(Error::NotSettled {
-                paid_zat: repayment.paid_zat,
-                due_zat: repayment.due_zat,
-            });
-        }
-        let report = scan(&self.board_watch, &self.lightwalletd)?;
+    ) -> Result<(String, SettledEntry), Error> {
+        let height = repayment.covering_height().ok_or(Error::NotSettled {
+            paid_zat: repayment.paid_zat,
+            due_zat: repayment.due_zat,
+        })?;
         let financier_pk = self.key.verifying_key().to_bytes();
-        if let Some(existing) = settled(&report.records, &register.entry.nullifier, &financier_pk) {
-            return Ok(existing.txid);
+        let report = scan(&self.board_watch, &self.lightwalletd)?;
+        if let Some(existing) = settled(&report.settled, doc, buyer_pk, &financier_pk) {
+            return Ok((existing.txid, existing.entry));
         }
-        let entry = settled_entry(&self.key, &register.entry);
+        let paid_date = lwd::block_time(&self.lightwalletd, height)? / 86_400;
+        let entry = settle(&self.key, doc, buyer_pk, repayment, paid_date)?;
         self.wallet.sync()?;
-        Ok(self.wallet.pay(&[Payment {
+        let txid = self.wallet.pay(&[Payment {
             address: self.board_address.clone(),
             amount_zat: ENTRY_POST_ZAT,
             memo: Some(PaymentMemo::Arbitrary(
-                entry.to_memo_bytes()[..ENTRY_LEN].to_vec(),
+                entry.to_memo_bytes()[..jitsuin_core::settled::SETTLED_LEN].to_vec(),
             )),
-        }])?)
+        }])?;
+        Ok((txid, entry))
     }
 }
 
@@ -146,85 +189,104 @@ impl Financier {
 mod tests {
     use super::*;
     use crate::receipts::tests::{receipt_memo, tx};
-    use crate::receipts::Verdict;
-    use jitsuin_board::{lookup, Lookup, Position};
+    use jitsuin_core::memo::{self, MemoItem};
+    use jitsuin_core::Receipt;
     use jitsuin_wallet::Memo;
 
-    const N: [u8; 32] = [7; 32];
-
-    fn buyer() -> SigningKey {
-        SigningKey::from_bytes(&[2; 32])
+    fn key(b: u8) -> SigningKey {
+        SigningKey::from_bytes(&[b; 32])
     }
 
-    fn repay(k: &SigningKey, amount: u64) -> Memo {
-        Memo::Arbitrary(receipt_memo(k, ReceiptKind::Repayment, N, amount))
+    fn doc() -> SettlementDoc {
+        SettlementDoc {
+            nullifier: [7; 32],
+            amount_zat: 50_000,
+            due_date: 100,
+        }
+    }
+
+    /// Repayment memo as the buyer's QR builds it: receipt + claim.
+    fn pay(k: &SigningKey, amount: u64) -> Memo {
+        let r = Receipt::sign(k, ReceiptKind::Repayment, doc().nullifier, amount, 99).unwrap();
+        let claim = doc().buyer_seal(k);
+        Memo::Arbitrary(memo::encode(&[MemoItem::Receipt(r), MemoItem::Seal(claim)]).unwrap())
     }
 
     #[test]
-    fn status_follows_mined_valid_payments() {
-        let pk = buyer().verifying_key().to_bytes();
-        let forger = SigningKey::from_bytes(&[5; 32]);
-        let due = 50_000;
-        let status = |txs: &[WalletTx]| repayment(txs, &N, &pk, due).status();
+    fn status_follows_mined_valid_payments_and_claims() {
+        let pk = key(2).verifying_key().to_bytes();
+        let st = |txs: &[WalletTx], today| repayment(txs, &doc(), &pk).status(&doc(), today, 7);
 
-        assert_eq!(status(&[]), Status::Unpaid);
-        let pending = tx("p", None, 50_000, true, repay(&buyer(), 50_000));
-        assert_eq!(status(std::slice::from_ref(&pending)), Status::Pending);
-        let part = tx("a", Some(10), 20_000, true, repay(&buyer(), 20_000));
-        assert_eq!(status(&[part.clone(), pending]), Status::Partial);
-        let rest = tx("b", Some(11), 30_000, true, repay(&buyer(), 30_000));
+        assert_eq!(st(&[], 50), Status::Unpaid);
+        assert_eq!(st(&[], 101), Status::Overdue);
+        let pending = tx("p", None, 50_000, true, pay(&key(2), 50_000));
+        assert_eq!(st(std::slice::from_ref(&pending), 50), Status::Pending);
+        let part = tx("a", Some(10), 20_000, true, pay(&key(2), 20_000));
+        // a partial payment carries a claim too: not covered yet, so Claimed
+        assert_eq!(st(std::slice::from_ref(&part), 50), Status::Claimed);
+        let rest = tx("b", Some(11), 30_000, true, pay(&key(2), 30_000));
+        assert_eq!(st(&[part.clone(), rest.clone()], 50), Status::Settled);
+
         // forged and mismatched receipts are never counted
-        let forged = tx("f", Some(9), 50_000, true, repay(&forger, 50_000));
-        let short = tx("s", Some(9), 1_000, true, repay(&buyer(), 50_000));
-        let txs = [forged, short, part, rest];
-        let r = repayment(&txs, &N, &pk, due);
-        assert_eq!(r.status(), Status::Settled);
+        let forged = tx("f", Some(9), 50_000, true, pay(&key(5), 50_000));
+        let short = tx("s", Some(9), 1_000, true, pay(&key(2), 50_000));
+        let txs = [forged, short.clone(), part, rest];
+        let r = repayment(&txs, &doc(), &pk);
         assert_eq!(r.paid_zat, 50_000);
-        assert_eq!(r.payments.len(), 2);
-        assert_eq!(r.rejected.len(), 2);
-        assert!(matches!(
-            r.rejected[1].verdict,
-            Verdict::AmountMismatch { .. }
-        ));
-        // an advance receipt for the same N is not a repayment
-        let adv = Memo::Arbitrary(receipt_memo(&buyer(), ReceiptKind::Advance, N, 50_000));
-        assert_eq!(
-            status(&[tx("x", Some(12), 50_000, true, adv)]),
-            Status::Unpaid
+        assert_eq!((r.payments.len(), r.rejected.len()), (2, 2));
+        assert_eq!(r.covering_height(), Some(11));
+
+        // a legacy receipt-only memo still counts as payment, but carries no claim
+        let legacy = tx(
+            "l",
+            Some(12),
+            50_000,
+            true,
+            Memo::Arbitrary(receipt_memo(
+                &key(2),
+                ReceiptKind::Repayment,
+                [7; 32],
+                50_000,
+            )),
         );
+        let r = repayment(std::slice::from_ref(&legacy), &doc(), &pk);
+        assert_eq!(r.status(&doc(), 50, 7), Status::Settled);
+        assert!(r.claims.is_empty());
     }
 
     #[test]
-    fn settled_entry_is_unlinkable_without_n_and_never_conflicts() {
-        let supplier = SigningKey::from_bytes(&[1; 32]);
-        let financier = SigningKey::from_bytes(&[3; 32]);
-        let register = BoardEntry::sign(&supplier, EntryKind::Register, N, [0xBB; 32], 2, 3);
-        let s = settled_entry(&financier, &register);
-        assert_eq!(s.kind, EntryKind::Settled);
-        assert_ne!(s.nullifier, N);
-        assert_eq!(s.nullifier, settled_tag(&N));
-        assert_ne!(s.financier_commitment, register.financier_commitment);
-        s.verify(&financier.verifying_key().to_bytes()).unwrap();
-
-        let at = |entry, height| BoardRecord {
-            txid: format!("t{height}"),
-            position: Position {
-                height,
-                tx_index: 0,
-                output_index: 0,
-            },
-            entry,
-        };
-        let records = vec![at(register, 1), at(s, 2)];
+    fn a_lying_buyer_never_reaches_settled() {
+        let pk = key(2).verifying_key().to_bytes();
+        // the buyer signs "I paid 50_000" but sends 1_000
+        let lie = tx("lie", Some(10), 1_000, true, pay(&key(2), 50_000));
+        let r = repayment(std::slice::from_ref(&lie), &doc(), &pk);
+        assert_eq!(r.paid_zat, 0);
+        assert_eq!(r.claims.len(), 1);
+        assert_eq!(r.status(&doc(), 105, 7), Status::Claimed);
+        assert_eq!(r.status(&doc(), 108, 7), Status::Disputed);
         assert!(matches!(
-            lookup(&records, &N, &supplier.verifying_key().to_bytes()),
-            Lookup::Registered { .. }
+            settle(&key(3), &doc(), &pk, &r, 99),
+            Err(Error::NotSettled { .. })
         ));
-        assert_eq!(
-            settled(&records, &N, &financier.verifying_key().to_bytes())
-                .unwrap()
-                .txid,
-            "t2"
+    }
+
+    #[test]
+    fn countersigned_entry_verifies_with_both_keys() {
+        let (pk, fin_pk) = (
+            key(2).verifying_key().to_bytes(),
+            key(3).verifying_key().to_bytes(),
         );
+        let paid = tx("ok", Some(10), 50_000, true, pay(&key(2), 50_000));
+        let r = repayment(std::slice::from_ref(&paid), &doc(), &pk);
+        let on_time = settle(&key(3), &doc(), &pk, &r, 100).unwrap();
+        on_time.verify(&doc(), &pk, &fin_pk).unwrap();
+        assert!(on_time.on_time());
+        let late = settle(&key(3), &doc(), &pk, &r, 101).unwrap();
+        late.verify(&doc(), &pk, &fin_pk).unwrap();
+        assert!(!late.on_time());
+        // without a claim there is nothing to countersign
+        let mut no_claim = r;
+        no_claim.claims.clear();
+        assert!(settle(&key(3), &doc(), &pk, &no_claim, 100).is_err());
     }
 }

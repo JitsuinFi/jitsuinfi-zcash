@@ -14,8 +14,8 @@
 //! | 72     | supplier signature over bytes 1..72    | 64   |
 //! | 136    | zero padding                           | 376  |
 //!
-//! The nullifier is an input here; how it is derived is HNK-02.T1. A `settled` entry carries
-//! [`settled_tag`] instead of N and is signed by the financier (HNK-06.T4, proposal D-18).
+//! The nullifier is an input here; how it is derived is HNK-02.T1. A `settled` entry has its own
+//! layout with [`settled_tag`] instead of N and two signatures (`settled::SettledEntry`, DEV-08).
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
@@ -118,8 +118,8 @@ impl BoardEntry {
         memo
     }
 
-    /// Strict decoder. Accepts the 136-byte entry alone or a padded memo; padding must be zero.
-    /// Does not verify the signature (see [`BoardEntry::verify`]).
+    /// Strict decoder for register entries. Accepts the 136-byte entry alone or a padded memo;
+    /// padding must be zero. Does not verify the signature (see [`BoardEntry::verify`]).
     pub fn from_memo_bytes(memo: &[u8]) -> Result<Self, Error> {
         if memo.len() > MEMO_LEN {
             return Err(Error::TrailingBytes);
@@ -132,6 +132,10 @@ impl BoardEntry {
             return Err(Error::BadMagic);
         }
         let kind = EntryKind::try_from(r.byte()?)?;
+        // Settled entries have their own layout (`SettledEntry`, DEV-08).
+        if kind != EntryKind::Register {
+            return Err(Error::UnknownEntryKind(kind as u8));
+        }
         let entry = BoardEntry {
             kind,
             nullifier: r.array()?,

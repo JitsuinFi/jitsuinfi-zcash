@@ -13,6 +13,7 @@ pub mod memo;
 pub mod nullifier;
 pub mod receipt;
 pub mod seal;
+pub mod settled;
 
 pub use assignment::Assignment;
 pub use entry::{financier_commitment, settled_tag, BoardEntry, EntryKind, ENTRY_LEN, MEMO_LEN};
@@ -22,3 +23,4 @@ pub use memo::MemoItem;
 pub use nullifier::{document_hash, nullifier};
 pub use receipt::{Receipt, ReceiptKind, RECEIPT_LEN};
 pub use seal::{verify_chain, ChainStatus, DocKind, Role, Seal, SealContent, Signers, SEAL_LEN};
+pub use settled::{SettledEntry, SettlementDoc, SETTLED_LATE, SETTLED_ON_TIME};

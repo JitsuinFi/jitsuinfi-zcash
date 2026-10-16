@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use jitsuin_core::{settled_tag, BoardEntry, EntryKind};
+use jitsuin_core::entry::ENTRY_MAGIC;
+use jitsuin_core::{settled_tag, BoardEntry, EntryKind, SettledEntry, SettlementDoc};
 use jitsuin_wallet::{Devtool, Memo};
 
 pub mod lwd;
@@ -56,6 +57,14 @@ pub struct BoardRecord {
     pub entry: BoardEntry,
 }
 
+/// A `settled` entry (two signatures, no N) at its position on chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettledRecord {
+    pub txid: String,
+    pub position: Position,
+    pub entry: SettledEntry,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rejected {
     pub txid: String,
@@ -65,8 +74,10 @@ pub struct Rejected {
 
 #[derive(Debug, Clone)]
 pub struct ScanReport {
-    /// Format-valid entries in total order.
+    /// Format-valid register entries in total order.
     pub records: Vec<BoardRecord>,
+    /// Format-valid `settled` entries in total order.
+    pub settled: Vec<SettledRecord>,
     /// Arbitrary-data memos that are not valid entries.
     pub rejected: Vec<Rejected>,
     /// Mined transactions that touched the board.
@@ -94,13 +105,20 @@ pub enum Lookup {
     },
 }
 
-/// Decodes board outputs into records. `tx_order` maps txid to its index inside its block.
+/// Board outputs decoded into register entries, settled entries and rejected memos.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Collected {
+    pub records: Vec<BoardRecord>,
+    pub settled: Vec<SettledRecord>,
+    pub rejected: Vec<Rejected>,
+}
+
+/// Decodes board outputs. `tx_order` maps txid to its index inside its block.
 pub fn collect(
     txs: &[jitsuin_wallet::WalletTx],
     tx_order: &HashMap<String, u32>,
-) -> Result<(Vec<BoardRecord>, Vec<Rejected>), Error> {
-    let mut records = Vec::new();
-    let mut rejected = Vec::new();
+) -> Result<Collected, Error> {
+    let mut out = Collected::default();
     for tx in txs {
         let Some(height) = tx.mined_height else {
             continue;
@@ -108,30 +126,47 @@ pub fn collect(
         let tx_index = *tx_order
             .get(&tx.txid)
             .ok_or_else(|| Error::Ordering(format!("{} not found in block {height}", tx.txid)))?;
-        for out in tx.outputs.iter().filter(|o| o.received) {
-            let Memo::Arbitrary(bytes) = &out.memo else {
+        for o in tx.outputs.iter().filter(|o| o.received) {
+            let Memo::Arbitrary(bytes) = &o.memo else {
                 continue;
             };
-            match BoardEntry::from_memo_bytes(bytes) {
-                Ok(entry) => records.push(BoardRecord {
-                    txid: tx.txid.clone(),
-                    position: Position {
-                        height,
-                        tx_index,
-                        output_index: out.index,
-                    },
-                    entry,
-                }),
-                Err(e) => rejected.push(Rejected {
-                    txid: tx.txid.clone(),
-                    output_index: out.index,
+            let position = Position {
+                height,
+                tx_index,
+                output_index: o.index,
+            };
+            let txid = tx.txid.clone();
+            let is_settled = bytes.get(1..5) == Some(ENTRY_MAGIC.as_slice())
+                && bytes.get(5) == Some(&(EntryKind::Settled as u8));
+            let decoded = if is_settled {
+                SettledEntry::from_memo_bytes(bytes).map(|entry| {
+                    out.settled.push(SettledRecord {
+                        txid: txid.clone(),
+                        position,
+                        entry,
+                    })
+                })
+            } else {
+                BoardEntry::from_memo_bytes(bytes).map(|entry| {
+                    out.records.push(BoardRecord {
+                        txid: txid.clone(),
+                        position,
+                        entry,
+                    })
+                })
+            };
+            if let Err(e) = decoded {
+                out.rejected.push(Rejected {
+                    txid,
+                    output_index: o.index,
                     reason: e.to_string(),
-                }),
+                });
             }
         }
     }
-    records.sort_by_key(|r| r.position);
-    Ok((records, rejected))
+    out.records.sort_by_key(|r| r.position);
+    out.settled.sort_by_key(|r| r.position);
+    Ok(out)
 }
 
 /// First valid register entry for `nullifier` wins. Entries whose supplier signature does not verify
@@ -176,18 +211,19 @@ pub fn lookup(
     }
 }
 
-/// First `settled` entry for `nullifier` signed by `financier_pk` (the key behind the financier
-/// commitment, shared with the supplier and the buyer). Unsigned or foreign entries are ignored.
+/// First `settled` entry for the settlement document that verifies with both keys (buyer from the
+/// invoice, financier from the assignment letter). Forged or one-sided entries are ignored.
 pub fn settled(
-    records: &[BoardRecord],
-    nullifier: &[u8; 32],
+    settled: &[SettledRecord],
+    doc: &SettlementDoc,
+    buyer_pk: &[u8; 32],
     financier_pk: &[u8; 32],
-) -> Option<BoardRecord> {
-    let tag = settled_tag(nullifier);
-    records
+) -> Option<SettledRecord> {
+    let tag = settled_tag(&doc.nullifier);
+    settled
         .iter()
-        .filter(|r| r.entry.kind == EntryKind::Settled && r.entry.nullifier == tag)
-        .find(|r| r.entry.verify(financier_pk).is_ok())
+        .filter(|r| r.entry.tag == tag)
+        .find(|r| r.entry.verify(doc, buyer_pk, financier_pk).is_ok())
         .cloned()
 }
 
@@ -208,9 +244,14 @@ pub fn scan(watch: &Devtool, lightwalletd: &str) -> Result<ScanReport, Error> {
             tx_order.insert(txid, i as u32);
         }
     }
-    let (records, rejected) = collect(&txs, &tx_order)?;
+    let Collected {
+        records,
+        settled,
+        rejected,
+    } = collect(&txs, &tx_order)?;
     Ok(ScanReport {
         records,
+        settled,
         rejected,
         transactions: txs.len() - pending,
         pending,
@@ -287,40 +328,69 @@ mod tests {
     }
 
     #[test]
-    fn settled_entries_do_not_conflict_and_need_the_financier_signature() {
+    fn settled_entries_are_separate_and_need_both_signatures() {
         let supplier = SigningKey::from_bytes(&[1; 32]);
+        let buyer = SigningKey::from_bytes(&[2; 32]);
         let financier = SigningKey::from_bytes(&[3; 32]);
-        let griefer = SigningKey::from_bytes(&[9; 32]);
-        let n = [7u8; 32];
-        let settled_by = |k: &SigningKey, height| BoardRecord {
-            txid: format!("s{height}"),
-            position: Position {
-                height,
-                tx_index: 0,
-                output_index: 0,
-            },
-            entry: BoardEntry::sign(k, EntryKind::Settled, settled_tag(&n), [0xBB; 32], 0, 0),
+        let (buyer_pk, fin_pk) = (
+            buyer.verifying_key().to_bytes(),
+            financier.verifying_key().to_bytes(),
+        );
+        let doc = SettlementDoc {
+            nullifier: [7; 32],
+            amount_zat: 50_000,
+            due_date: 10,
         };
-        let mut records = vec![
-            rec(&supplier, 7, 0xBB, 100, 0, 0),
-            settled_by(&griefer, 110),
-            settled_by(&financier, 120),
-            // a settled-kind entry carrying N itself, even with a valid supplier signature,
-            // is not a register entry
-            BoardRecord {
-                entry: BoardEntry::sign(&supplier, EntryKind::Settled, n, [0xCC; 32], 0, 0),
-                ..rec(&supplier, 7, 0xCC, 130, 0, 0)
-            },
-        ];
-        records.sort_by_key(|r| r.position);
-        let pk = supplier.verifying_key().to_bytes();
+        let entry = |b: &SigningKey, f: &SigningKey| {
+            SettledEntry::countersign(
+                &doc,
+                &doc.buyer_seal(b),
+                &b.verifying_key().to_bytes(),
+                f,
+                jitsuin_core::SETTLED_ON_TIME,
+            )
+            .unwrap()
+        };
+        let out = |index, memo: Vec<u8>| TxOutput {
+            index,
+            pool: "Ironwood".into(),
+            value_zat: 10_000,
+            is_change: false,
+            received: true,
+            memo: Memo::Arbitrary(memo),
+        };
+        let register = BoardEntry::sign(&supplier, EntryKind::Register, [7; 32], [0xBB; 32], 0, 0);
+        let txs = vec![WalletTx {
+            txid: "t".into(),
+            mined_height: Some(5),
+            fee_zat: None,
+            outputs: vec![
+                out(0, register.to_memo_bytes().to_vec()),
+                // forged: the "buyer" claim is signed by the financier's colleague
+                out(
+                    1,
+                    entry(&SigningKey::from_bytes(&[8; 32]), &financier)
+                        .to_memo_bytes()
+                        .to_vec(),
+                ),
+                out(2, entry(&buyer, &financier).to_memo_bytes().to_vec()),
+            ],
+        }];
+        let order: HashMap<String, u32> = [("t".into(), 0)].into_iter().collect();
+        let c = collect(&txs, &order).unwrap();
+        assert_eq!(
+            (c.records.len(), c.settled.len(), c.rejected.len()),
+            (1, 2, 0)
+        );
         assert!(matches!(
-            lookup(&records, &n, &pk),
+            lookup(&c.records, &[7; 32], &supplier.verifying_key().to_bytes()),
             Lookup::Registered { .. }
         ));
-        let found = settled(&records, &n, &financier.verifying_key().to_bytes()).unwrap();
-        assert_eq!(found.txid, "s120");
-        assert!(settled(&records, &[8; 32], &financier.verifying_key().to_bytes()).is_none());
+        let found = settled(&c.settled, &doc, &buyer_pk, &fin_pk).unwrap();
+        assert_eq!(found.position.output_index, 2);
+        let mut other = doc;
+        other.amount_zat += 1;
+        assert!(settled(&c.settled, &other, &buyer_pk, &fin_pk).is_none());
     }
 
     #[test]
@@ -378,7 +448,9 @@ mod tests {
         let order: HashMap<String, u32> = [("a".into(), 0), ("b".into(), 3), ("d".into(), 0)]
             .into_iter()
             .collect();
-        let (records, rejected) = collect(&txs, &order).unwrap();
+        let Collected {
+            records, rejected, ..
+        } = collect(&txs, &order).unwrap();
         let positions: Vec<_> = records
             .iter()
             .map(|r| (r.txid.as_str(), r.position.output_index))

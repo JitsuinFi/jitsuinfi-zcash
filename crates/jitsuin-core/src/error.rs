@@ -39,6 +39,8 @@ pub enum Error {
     TooManySeals,
     /// Address is empty, too long, or not ASCII alphanumeric.
     InvalidAddress,
+    /// Unknown flag value in a settled entry.
+    InvalidFlag(u8),
     /// Memo does not start with the ZIP-302 arbitrary-data marker `0xFF`.
     NotArbitraryDataMemo,
     /// Input ended before all fields were read.
@@ -70,6 +72,7 @@ impl fmt::Display for Error {
             Error::SelfApproval => write!(f, "one key holds two roles"),
             Error::TooManySeals => write!(f, "more seals than the policy allows"),
             Error::InvalidAddress => write!(f, "address must be 1-512 ASCII alphanumeric bytes"),
+            Error::InvalidFlag(v) => write!(f, "invalid settled flag 0x{v:02x}"),
             Error::NotArbitraryDataMemo => write!(f, "memo is not ZIP-302 arbitrary data (0xFF)"),
             Error::Truncated => write!(f, "input truncated"),
             Error::TrailingBytes => write!(f, "unexpected trailing bytes"),

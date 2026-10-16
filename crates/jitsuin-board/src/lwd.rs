@@ -25,6 +25,23 @@ pub fn block_txids(endpoint: &str, height: u32) -> Result<Vec<String>, Error> {
     parse_compact_block_txids(&block)
 }
 
+/// Block time (Unix seconds) of the block at `height` (`CompactBlock.time`, field 5).
+pub fn block_time(endpoint: &str, height: u32) -> Result<u32, Error> {
+    let mut msg = vec![0x08];
+    put_varint(&mut msg, u64::from(height));
+    parse_compact_block_time(&unary(endpoint, GET_BLOCK, &msg)?)
+}
+
+pub fn parse_compact_block_time(block: &[u8]) -> Result<u32, Error> {
+    fields(block)?
+        .into_iter()
+        .find_map(|(f, v)| match (f, v) {
+            (5, Value::Varint(t)) => u32::try_from(t).ok(),
+            _ => None,
+        })
+        .ok_or_else(|| Error::Lightwalletd("CompactBlock without time".into()))
+}
+
 /// Height of the chain tip seen by lightwalletd (`GetLatestBlock`), used to count confirmations.
 pub fn latest_height(endpoint: &str) -> Result<u32, Error> {
     parse_block_id_height(&unary(endpoint, GET_LATEST_BLOCK, &[])?)
@@ -203,6 +220,14 @@ mod tests {
         id.extend_from_slice(&[0x12, 0x02, 0xab, 0xcd]);
         assert_eq!(parse_block_id_height(&id).unwrap(), 4_509_045);
         assert!(parse_block_id_height(&[0x12, 0x00]).is_err());
+    }
+
+    #[test]
+    fn parses_block_time() {
+        let mut block = vec![0x10, 0x05, 0x28];
+        put_varint(&mut block, 1_792_174_167);
+        assert_eq!(parse_compact_block_time(&block).unwrap(), 1_792_174_167);
+        assert!(parse_compact_block_time(&[0x10, 0x05]).is_err());
     }
 
     #[test]
