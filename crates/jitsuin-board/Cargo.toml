@@ -1,0 +1,15 @@
+[package]
+name = "jitsuin-board"
+version = "0.1.0"
+description = "JitsuinFi registry board scanner: ordering, duplicate nullifier detection, invalid entry filtering"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+jitsuin-core = { path = "../jitsuin-core" }
+jitsuin-wallet = { path = "../jitsuin-wallet" }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "rustls"] }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
