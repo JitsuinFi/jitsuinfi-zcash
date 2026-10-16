@@ -65,6 +65,27 @@ impl SettlementDoc {
         out
     }
 
+    /// Strict decoder (magic, version, exact length).
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes);
+        if r.take(4)? != SETTLEMENT_MAGIC {
+            return Err(Error::BadMagic);
+        }
+        let version = r.byte()?;
+        if version != SETTLEMENT_VERSION {
+            return Err(Error::UnsupportedVersion(version));
+        }
+        let doc = SettlementDoc {
+            nullifier: r.array()?,
+            amount_zat: u64::from_le_bytes(r.array()?),
+            due_date: u32::from_le_bytes(r.array()?),
+        };
+        if !r.is_empty() {
+            return Err(Error::TrailingBytes);
+        }
+        Ok(doc)
+    }
+
     pub fn doc_hash(&self) -> [u8; 32] {
         sealed_document_hash(&self.to_canonical_bytes())
     }

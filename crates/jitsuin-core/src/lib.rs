@@ -6,6 +6,7 @@
 //! Pure logic only (no network, no chain access). Zcash integration lives in separate crates.
 
 pub mod assignment;
+pub mod bundle;
 pub mod entry;
 pub mod error;
 pub mod invoice;
@@ -16,6 +17,7 @@ pub mod seal;
 pub mod settled;
 
 pub use assignment::Assignment;
+pub use bundle::{Bundle, BundleReport};
 pub use entry::{financier_commitment, settled_tag, BoardEntry, EntryKind, ENTRY_LEN, MEMO_LEN};
 pub use error::Error;
 pub use invoice::{sign_invoice, verify_invoice, Invoice};

@@ -11,7 +11,9 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use jitsuin_core::entry::ENTRY_MAGIC;
-use jitsuin_core::{settled_tag, BoardEntry, EntryKind, SettledEntry, SettlementDoc};
+use jitsuin_core::{
+    nullifier, settled_tag, BoardEntry, Bundle, EntryKind, SettledEntry, SettlementDoc,
+};
 use jitsuin_wallet::{Devtool, Memo};
 
 pub mod lwd;
@@ -225,6 +227,33 @@ pub fn settled(
         .filter(|r| r.entry.tag == tag)
         .find(|r| r.entry.verify(doc, buyer_pk, financier_pk).is_ok())
         .cloned()
+}
+
+/// Board view of a verification bundle (HNK-19.T6): the register lookup for its N and, when the
+/// bundle has a settlement document, the matching two-signature `settled` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleOnBoard {
+    pub register: Lookup,
+    pub settled: Option<SettledRecord>,
+}
+
+pub fn bundle_on_board(
+    bundle: &Bundle,
+    records: &[BoardRecord],
+    settled_records: &[SettledRecord],
+) -> Result<BundleOnBoard, jitsuin_core::Error> {
+    let n = nullifier(&bundle.invoice)?;
+    let register = lookup(records, &n, &bundle.invoice.supplier_ephemeral_pk);
+    let settled = match (&bundle.settlement, &bundle.assignment) {
+        (Some(doc), Some(a)) => settled(
+            settled_records,
+            doc,
+            &bundle.invoice.buyer_pk,
+            &a.financier_pk,
+        ),
+        _ => None,
+    };
+    Ok(BundleOnBoard { register, settled })
 }
 
 /// Syncs the watch-only board wallet, fetches full transactions (memos), resolves tx order from

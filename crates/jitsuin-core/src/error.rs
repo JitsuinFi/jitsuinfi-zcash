@@ -41,6 +41,8 @@ pub enum Error {
     InvalidAddress,
     /// Unknown flag value in a settled entry.
     InvalidFlag(u8),
+    /// Verification bundle has a missing, repeated or unknown item.
+    BadBundle,
     /// Memo does not start with the ZIP-302 arbitrary-data marker `0xFF`.
     NotArbitraryDataMemo,
     /// Input ended before all fields were read.
@@ -73,6 +75,7 @@ impl fmt::Display for Error {
             Error::TooManySeals => write!(f, "more seals than the policy allows"),
             Error::InvalidAddress => write!(f, "address must be 1-512 ASCII alphanumeric bytes"),
             Error::InvalidFlag(v) => write!(f, "invalid settled flag 0x{v:02x}"),
+            Error::BadBundle => write!(f, "malformed verification bundle"),
             Error::NotArbitraryDataMemo => write!(f, "memo is not ZIP-302 arbitrary data (0xFF)"),
             Error::Truncated => write!(f, "input truncated"),
             Error::TrailingBytes => write!(f, "unexpected trailing bytes"),
