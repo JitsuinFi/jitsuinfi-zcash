@@ -37,6 +37,8 @@ pub enum Error {
     SelfApproval,
     /// More seals than the policy has roles.
     TooManySeals,
+    /// Address is empty, too long, or not ASCII alphanumeric.
+    InvalidAddress,
     /// Memo does not start with the ZIP-302 arbitrary-data marker `0xFF`.
     NotArbitraryDataMemo,
     /// Input ended before all fields were read.
@@ -67,6 +69,7 @@ impl fmt::Display for Error {
             Error::SealOrder => write!(f, "seal out of policy order"),
             Error::SelfApproval => write!(f, "one key holds two roles"),
             Error::TooManySeals => write!(f, "more seals than the policy allows"),
+            Error::InvalidAddress => write!(f, "address must be 1-512 ASCII alphanumeric bytes"),
             Error::NotArbitraryDataMemo => write!(f, "memo is not ZIP-302 arbitrary data (0xFF)"),
             Error::Truncated => write!(f, "input truncated"),
             Error::TrailingBytes => write!(f, "unexpected trailing bytes"),
