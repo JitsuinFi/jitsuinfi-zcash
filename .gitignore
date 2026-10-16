@@ -1,5 +1,6 @@
 # build output
 /target
+/pkg
 
 # secrets and wallet material: never commit
 *.age

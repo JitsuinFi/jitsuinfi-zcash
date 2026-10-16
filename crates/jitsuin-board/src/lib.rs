@@ -8,16 +8,21 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "net")]
+use std::time::Instant;
 
 use jitsuin_core::entry::ENTRY_MAGIC;
 use jitsuin_core::{
     nullifier, settled_tag, BoardEntry, Bundle, DoubleSignProof, EntryAt, EntryKind, Invoice,
     SettledEntry, SettlementDoc,
 };
-use jitsuin_wallet::{Devtool, Memo};
+#[cfg(feature = "net")]
+use jitsuin_wallet::Devtool;
+use jitsuin_wallet::Memo;
 
 pub mod history;
+#[cfg(feature = "net")]
 pub mod lwd;
 
 #[derive(Debug)]
@@ -117,6 +122,45 @@ pub struct Collected {
     pub rejected: Vec<Rejected>,
 }
 
+impl Collected {
+    /// Decodes one board memo at `position` into a register entry, a settled entry, or a
+    /// rejection. Also used by clients that get board memos from an API (`jitsuin-wasm`).
+    pub fn add(&mut self, txid: &str, position: Position, memo: &[u8]) {
+        let is_settled = memo.get(1..5) == Some(ENTRY_MAGIC.as_slice())
+            && memo.get(5) == Some(&(EntryKind::Settled as u8));
+        let decoded = if is_settled {
+            SettledEntry::from_memo_bytes(memo).map(|entry| {
+                self.settled.push(SettledRecord {
+                    txid: txid.to_string(),
+                    position,
+                    entry,
+                })
+            })
+        } else {
+            BoardEntry::from_memo_bytes(memo).map(|entry| {
+                self.records.push(BoardRecord {
+                    txid: txid.to_string(),
+                    position,
+                    entry,
+                })
+            })
+        };
+        if let Err(e) = decoded {
+            self.rejected.push(Rejected {
+                txid: txid.to_string(),
+                output_index: position.output_index,
+                reason: e.to_string(),
+            });
+        }
+    }
+
+    /// Sorts entries into the total board order.
+    pub fn sort(&mut self) {
+        self.records.sort_by_key(|r| r.position);
+        self.settled.sort_by_key(|r| r.position);
+    }
+}
+
 /// Decodes board outputs. `tx_order` maps txid to its index inside its block.
 pub fn collect(
     txs: &[jitsuin_wallet::WalletTx],
@@ -139,37 +183,10 @@ pub fn collect(
                 tx_index,
                 output_index: o.index,
             };
-            let txid = tx.txid.clone();
-            let is_settled = bytes.get(1..5) == Some(ENTRY_MAGIC.as_slice())
-                && bytes.get(5) == Some(&(EntryKind::Settled as u8));
-            let decoded = if is_settled {
-                SettledEntry::from_memo_bytes(bytes).map(|entry| {
-                    out.settled.push(SettledRecord {
-                        txid: txid.clone(),
-                        position,
-                        entry,
-                    })
-                })
-            } else {
-                BoardEntry::from_memo_bytes(bytes).map(|entry| {
-                    out.records.push(BoardRecord {
-                        txid: txid.clone(),
-                        position,
-                        entry,
-                    })
-                })
-            };
-            if let Err(e) = decoded {
-                out.rejected.push(Rejected {
-                    txid,
-                    output_index: o.index,
-                    reason: e.to_string(),
-                });
-            }
+            out.add(&tx.txid, position, bytes);
         }
     }
-    out.records.sort_by_key(|r| r.position);
-    out.settled.sort_by_key(|r| r.position);
+    out.sort();
     Ok(out)
 }
 
@@ -338,6 +355,7 @@ pub fn verify_proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -
         && ordered
 }
 
+#[cfg(feature = "net")]
 /// Syncs the watch-only board wallet, fetches full transactions (memos), resolves tx order from
 /// lightwalletd, and returns every entry in total order.
 pub fn scan(watch: &Devtool, lightwalletd: &str) -> Result<ScanReport, Error> {

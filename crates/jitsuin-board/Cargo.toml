@@ -9,7 +9,12 @@ publish = false
 [dependencies]
 jitsuin-core = { path = "../jitsuin-core" }
 jitsuin-wallet = { path = "../jitsuin-wallet" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "rustls"], optional = true }
+
+[features]
+# Network access (lightwalletd client and `scan`). Off for WASM clients, which get board data from an API.
+default = ["net"]
+net = ["dep:reqwest"]
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
