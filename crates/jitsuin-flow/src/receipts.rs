@@ -1,6 +1,8 @@
 //! Signed receipts found in a wallet: advances for the supplier, repayments for the financier.
+//! A memo may carry seals next to the receipt (Sign-to-Pay); they are returned with it.
 
-use jitsuin_core::{Receipt, ReceiptKind};
+use jitsuin_core::memo::{self, MemoItem};
+use jitsuin_core::{Receipt, ReceiptKind, Seal};
 use jitsuin_wallet::{Memo, WalletTx};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +25,8 @@ pub struct ReceivedReceipt {
     pub received_zat: u64,
     pub receipt: Receipt,
     pub verdict: Verdict,
+    /// Seals carried in the same memo, in memo order.
+    pub seals: Vec<Seal>,
 }
 
 impl ReceivedReceipt {
@@ -46,7 +50,19 @@ pub fn received(
             let Memo::Arbitrary(bytes) = &out.memo else {
                 continue;
             };
-            let Ok(receipt) = Receipt::from_memo_bytes(bytes) else {
+            let Ok(items) = memo::decode(bytes) else {
+                continue;
+            };
+            let mut receipts = Vec::new();
+            let mut seals = Vec::new();
+            for item in items {
+                match item {
+                    MemoItem::Receipt(r) => receipts.push(r),
+                    MemoItem::Seal(s) => seals.push(s),
+                }
+            }
+            // Exactly one receipt per output; anything else is not a receipt memo.
+            let Ok([receipt]) = <[Receipt; 1]>::try_from(receipts) else {
                 continue;
             };
             if receipt.kind != kind || &receipt.nullifier != nullifier {
@@ -67,6 +83,7 @@ pub fn received(
                 received_zat: out.value_zat,
                 receipt,
                 verdict,
+                seals,
             });
         }
     }

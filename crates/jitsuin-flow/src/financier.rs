@@ -1,16 +1,23 @@
-//! Financier flow (HNK-05.T1): check the board, register the entry, wait for confirmation, then
-//! pay the advance with a signed receipt.
+//! Financier flow (HNK-05.T1, Sign-to-Pay HNK-19.T3): check the board, register the entry, wait
+//! for confirmation, wait for the assignment letter sealed by supplier and buyer, then pay the
+//! advance. The advance memo carries the receipt and the financier's seal on the letter, so the
+//! last signature and the money travel in one shielded transaction.
 //!
 //! [`Flow`] is a pure state machine fed with [`Event`]s, so its rules are unit tested without a
 //! chain. [`Financier`] drives it against a real wallet and board. Every path other than "our
-//! entry is the first valid one and confirmed" stops before any money moves.
+//! entry is the first valid one, confirmed, and the letter is sealed" stops before any money
+//! moves.
 
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
-use jitsuin_core::{BoardEntry, EntryKind, Receipt, ReceiptKind, ENTRY_LEN, RECEIPT_LEN};
+use jitsuin_core::memo::{self, MemoItem};
+use jitsuin_core::{
+    nullifier, Assignment, BoardEntry, ChainStatus, EntryKind, Invoice, Receipt, ReceiptKind, Role,
+    Seal, ENTRY_LEN,
+};
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
 use crate::Error;
@@ -20,9 +27,10 @@ pub const ENTRY_POST_ZAT: u64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deal {
-    pub nullifier: [u8; 32],
-    /// From the invoice; verifies the supplier signature on board entries.
-    pub supplier_ephemeral_pk: [u8; 32],
+    /// The buyer-signed invoice; gives N and the supplier and buyer keys.
+    pub invoice: Invoice,
+    /// Assignment letter of the invoice to this financier (DEV-07).
+    pub assignment: Assignment,
     /// `financier_commitment(financier_pk, salt)` of this financier.
     pub financier_commitment: [u8; 32],
     /// Shielded address of the supplier that receives the advance.
@@ -42,8 +50,14 @@ pub enum State {
     Register { entry: BoardEntry },
     /// Entry posted; wait until it is mined, confirmed, and still the first valid entry.
     AwaitConfirmation { entry_txid: String },
-    /// Our entry is the first valid one and confirmed: the advance may be paid.
-    Pay { entry: BoardRecord },
+    /// Our entry is the first valid one and confirmed; the assignment letter must be sealed by
+    /// the supplier and the buyer before any money moves (signing escrow).
+    AwaitAssignment { entry: BoardRecord },
+    /// Letter sealed by supplier and buyer: the advance may be paid together with our seal.
+    Pay {
+        entry: BoardRecord,
+        assignment_seals: Vec<Seal>,
+    },
     /// Advance paid.
     Done {
         entry: BoardRecord,
@@ -60,6 +74,7 @@ impl State {
             State::AwaitSupplierSignature => "AwaitSupplierSignature",
             State::Register { .. } => "Register",
             State::AwaitConfirmation { .. } => "AwaitConfirmation",
+            State::AwaitAssignment { .. } => "AwaitAssignment",
             State::Pay { .. } => "Pay",
             State::Done { .. } => "Done",
             State::Stopped(_) => "Stopped",
@@ -89,6 +104,8 @@ pub enum Event {
     EntryPosted {
         txid: String,
     },
+    /// Seals of the assignment letter collected so far (supplier, then buyer).
+    AssignmentSealed(Vec<Seal>),
     AdvanceSent {
         txid: String,
     },
@@ -100,6 +117,7 @@ impl Event {
             Event::BoardChecked { .. } => "BoardChecked",
             Event::SupplierSigned(_) => "SupplierSigned",
             Event::EntryPosted { .. } => "EntryPosted",
+            Event::AssignmentSealed(_) => "AssignmentSealed",
             Event::AdvanceSent { .. } => "AdvanceSent",
         }
     }
@@ -108,6 +126,7 @@ impl Event {
 #[derive(Debug, Clone)]
 pub struct Flow {
     deal: Deal,
+    nullifier: [u8; 32],
     state: State,
 }
 
@@ -122,14 +141,23 @@ impl Flow {
         if deal.supplier_address.is_empty() {
             return Err(Error::InvalidDeal("supplier address is empty"));
         }
+        let nullifier = nullifier(&deal.invoice)?;
+        // The letter must belong to this invoice and must not let one key hold two roles.
+        deal.assignment.verify(&deal.invoice, &[])?;
         Ok(Flow {
             deal,
+            nullifier,
             state: State::Check,
         })
     }
 
     pub fn deal(&self) -> &Deal {
         &self.deal
+    }
+
+    /// N of the invoice (DEV-04).
+    pub fn nullifier(&self) -> &[u8; 32] {
+        &self.nullifier
     }
 
     pub fn state(&self) -> &State {
@@ -140,7 +168,10 @@ impl Flow {
     pub fn apply(&mut self, event: Event) -> Result<&State, Error> {
         let next = match (&self.state, event) {
             (
-                State::Check | State::AwaitConfirmation { .. },
+                State::Check
+                | State::AwaitConfirmation { .. }
+                | State::AwaitAssignment { .. }
+                | State::Pay { .. },
                 Event::BoardChecked { lookup, tip_height },
             ) => self.on_board(lookup, tip_height),
             (State::AwaitSupplierSignature, Event::SupplierSigned(entry)) => {
@@ -150,7 +181,22 @@ impl Flow {
             (State::Register { .. }, Event::EntryPosted { txid }) => {
                 State::AwaitConfirmation { entry_txid: txid }
             }
-            (State::Pay { entry }, Event::AdvanceSent { txid }) => State::Done {
+            (State::AwaitAssignment { entry }, Event::AssignmentSealed(seals)) => {
+                match self.deal.assignment.verify(&self.deal.invoice, &seals)? {
+                    ChainStatus::Incomplete {
+                        next: Role::Financier,
+                    } => State::Pay {
+                        entry: entry.clone(),
+                        assignment_seals: seals,
+                    },
+                    _ => {
+                        return Err(Error::InvalidDeal(
+                            "assignment needs exactly the supplier and buyer seals",
+                        ))
+                    }
+                }
+            }
+            (State::Pay { entry, .. }, Event::AdvanceSent { txid }) => State::Done {
                 entry: entry.clone(),
                 advance_txid: txid,
             },
@@ -180,19 +226,27 @@ impl Flow {
             {
                 State::Stopped(Stop::AlreadyFinanced { winner })
             }
-            // Ours (posted now or in an earlier attempt).
-            Lookup::Registered { winner, .. } => {
-                if confirmations(tip_height, winner.position.height) >= self.deal.min_confirmations
+            // Ours (posted now or in an earlier attempt). A re-check after confirmation keeps
+            // the state: it only guards against a late double financing or a reorg.
+            Lookup::Registered { winner, .. } => match &self.state {
+                State::AwaitAssignment { .. } | State::Pay { .. } => self.state.clone(),
+                _ if confirmations(tip_height, winner.position.height)
+                    >= self.deal.min_confirmations =>
                 {
-                    State::Pay { entry: winner }
-                } else {
-                    State::AwaitConfirmation {
-                        entry_txid: winner.txid,
-                    }
+                    State::AwaitAssignment { entry: winner }
                 }
-            }
+                _ => State::AwaitConfirmation {
+                    entry_txid: winner.txid,
+                },
+            },
             Lookup::NotFound { .. } => match &self.state {
                 State::Check => State::AwaitSupplierSignature,
+                // Entry gone after a reorg: wait for it again before paying.
+                State::AwaitAssignment { entry } | State::Pay { entry, .. } => {
+                    State::AwaitConfirmation {
+                        entry_txid: entry.txid.clone(),
+                    }
+                }
                 // Posted but not mined yet.
                 other => other.clone(),
             },
@@ -203,14 +257,14 @@ impl Flow {
         if entry.kind != EntryKind::Register {
             return Err(Error::EntryMismatch("entry kind is not register"));
         }
-        if entry.nullifier != self.deal.nullifier {
+        if entry.nullifier != self.nullifier {
             return Err(Error::EntryMismatch("nullifier differs from the deal"));
         }
         if entry.financier_commitment != self.deal.financier_commitment {
             return Err(Error::EntryMismatch("financier commitment differs"));
         }
         entry
-            .verify(&self.deal.supplier_ephemeral_pk)
+            .verify(&self.deal.invoice.supplier_ephemeral_pk)
             .map_err(|_| Error::EntryMismatch("supplier signature does not verify"))
     }
 }
@@ -237,10 +291,12 @@ pub fn sent_advance(
                 let Memo::Arbitrary(bytes) = &o.memo else {
                     return false;
                 };
-                Receipt::from_memo_bytes(bytes).is_ok_and(|r| {
-                    r.kind == ReceiptKind::Advance
-                        && &r.nullifier == nullifier
-                        && r.verify(financier_pk).is_ok()
+                memo::decode(bytes).is_ok_and(|items| {
+                    items.iter().any(|item| {
+                        matches!(item, MemoItem::Receipt(r) if r.kind == ReceiptKind::Advance
+                            && &r.nullifier == nullifier
+                            && r.verify(financier_pk).is_ok())
+                    })
                 })
             })
         })
@@ -256,8 +312,8 @@ pub struct Financier {
     pub board_watch: Devtool,
     pub board_address: String,
     pub lightwalletd: String,
-    /// Long-term key of the financier; signs advance receipts. Its public key is behind the
-    /// financier commitment.
+    /// Long-term key of the financier; signs advance receipts and the assignment letter. Its
+    /// public key is behind the financier commitment and in the letter.
     pub key: SigningKey,
 }
 
@@ -268,8 +324,8 @@ impl Financier {
         let tip_height = lwd::latest_height(&self.lightwalletd)?;
         let lookup = lookup(
             &report.records,
-            &flow.deal().nullifier,
-            &flow.deal().supplier_ephemeral_pk,
+            flow.nullifier(),
+            &flow.deal().invoice.supplier_ephemeral_pk,
         );
         flow.apply(Event::BoardChecked { lookup, tip_height })
     }
@@ -308,31 +364,39 @@ impl Financier {
         }
     }
 
-    /// Pays the advance to the supplier with a signed receipt memo (state `Pay`). If this wallet
-    /// already sent an advance receipt for the nullifier, records that txid instead.
+    /// Pays the advance to the supplier (state `Pay`) after a last board check. The memo carries
+    /// the advance receipt and this financier's seal on the assignment letter (Sign-to-Pay). If
+    /// this wallet already sent an advance receipt for the nullifier, records that txid instead.
     pub fn pay_advance<'f>(&self, flow: &'f mut Flow, date: u32) -> Result<&'f State, Error> {
         if !matches!(flow.state(), State::Pay { .. }) {
             return Err(unexpected(flow, "pay_advance"));
         }
-        let deal = flow.deal().clone();
-        self.wallet.sync()?;
         let financier_pk = self.key.verifying_key().to_bytes();
-        if let Some(txid) = sent_advance(&self.wallet.list_tx()?, &deal.nullifier, &financier_pk) {
+        if flow.deal().assignment.financier_pk != financier_pk {
+            return Err(Error::InvalidDeal(
+                "financier key differs from the assignment letter",
+            ));
+        }
+        // Last look: a late double financing or a reorg moves the flow out of `Pay`.
+        let State::Pay {
+            assignment_seals, ..
+        } = self.check(flow)?.clone()
+        else {
+            return Ok(flow.state());
+        };
+        let deal = flow.deal().clone();
+        let n = *flow.nullifier();
+        self.wallet.sync()?;
+        if let Some(txid) = sent_advance(&self.wallet.list_tx()?, &n, &financier_pk) {
             return flow.apply(Event::AdvanceSent { txid });
         }
-        let receipt = Receipt::sign(
-            &self.key,
-            ReceiptKind::Advance,
-            deal.nullifier,
-            deal.advance_zat,
-            date,
-        )?;
+        let receipt = Receipt::sign(&self.key, ReceiptKind::Advance, n, deal.advance_zat, date)?;
+        let seal = deal.assignment.seal_next(&self.key, &assignment_seals)?;
+        let memo = memo::encode(&[MemoItem::Receipt(receipt), MemoItem::Seal(seal)])?;
         let txid = self.wallet.pay(&[Payment {
             address: deal.supplier_address,
             amount_zat: deal.advance_zat,
-            memo: Some(PaymentMemo::Arbitrary(
-                receipt.to_memo_bytes()[..RECEIPT_LEN].to_vec(),
-            )),
+            memo: Some(PaymentMemo::Arbitrary(memo)),
         }])?;
         flow.apply(Event::AdvanceSent { txid })
     }
@@ -352,14 +416,54 @@ mod tests {
     use jitsuin_core::financier_commitment;
     use jitsuin_wallet::TxOutput;
 
-    const N: [u8; 32] = [7; 32];
+    fn key(b: u8) -> SigningKey {
+        SigningKey::from_bytes(&[b; 32])
+    }
 
     fn supplier() -> SigningKey {
-        SigningKey::from_bytes(&[1; 32])
+        key(1)
+    }
+
+    fn buyer() -> SigningKey {
+        key(2)
     }
 
     fn financier() -> SigningKey {
-        SigningKey::from_bytes(&[3; 32])
+        key(3)
+    }
+
+    fn invoice() -> Invoice {
+        Invoice {
+            invoice_id: "TES-INV-0003".into(),
+            supplier_ephemeral_pk: supplier().verifying_key().to_bytes(),
+            buyer_pk: buyer().verifying_key().to_bytes(),
+            amount_zat: 1_000_000,
+            issue_date: 20_377,
+            due_date: 20_437,
+            terms_hash: [9; 32],
+        }
+    }
+
+    fn n() -> [u8; 32] {
+        nullifier(&invoice()).unwrap()
+    }
+
+    fn letter() -> Assignment {
+        Assignment::for_invoice(
+            &invoice(),
+            financier().verifying_key().to_bytes(),
+            "utest1financier",
+            [5; 32],
+        )
+        .unwrap()
+    }
+
+    /// Supplier and buyer seals on the letter.
+    fn seals() -> Vec<Seal> {
+        let a = letter();
+        let s0 = a.seal_next(&supplier(), &[]).unwrap();
+        let s1 = a.seal_next(&buyer(), std::slice::from_ref(&s0)).unwrap();
+        vec![s0, s1]
     }
 
     fn ours() -> [u8; 32] {
@@ -368,8 +472,8 @@ mod tests {
 
     fn deal(min_confirmations: u32) -> Deal {
         Deal {
-            nullifier: N,
-            supplier_ephemeral_pk: supplier().verifying_key().to_bytes(),
+            invoice: invoice(),
+            assignment: letter(),
             financier_commitment: ours(),
             supplier_address: "utest1supplier".into(),
             advance_zat: 950_000,
@@ -378,7 +482,7 @@ mod tests {
     }
 
     fn entry(commitment: [u8; 32]) -> BoardEntry {
-        BoardEntry::sign(&supplier(), EntryKind::Register, N, commitment, 2, 3)
+        BoardEntry::sign(&supplier(), EntryKind::Register, n(), commitment, 2, 3)
     }
 
     fn record(txid: &str, height: u32, entry: BoardEntry) -> BoardRecord {
@@ -395,19 +499,19 @@ mod tests {
 
     fn board(records: &[BoardRecord], tip_height: u32) -> Event {
         Event::BoardChecked {
-            lookup: lookup(records, &N, &supplier().verifying_key().to_bytes()),
+            lookup: lookup(records, &n(), &supplier().verifying_key().to_bytes()),
             tip_height,
         }
     }
 
     #[test]
-    fn happy_path_waits_for_confirmations_before_paying() {
+    fn happy_path_waits_for_confirmations_and_the_sealed_letter() {
         let mut flow = Flow::new(deal(2)).unwrap();
-        let griefer = SigningKey::from_bytes(&[9; 32]);
+        let griefer = key(9);
         let grief = record(
             "g",
             90,
-            BoardEntry::sign(&griefer, EntryKind::Register, N, [0x99; 32], 0, 0),
+            BoardEntry::sign(&griefer, EntryKind::Register, n(), [0x99; 32], 0, 0),
         );
 
         // a griefing entry without a valid supplier signature does not block the deal
@@ -438,13 +542,30 @@ mod tests {
             flow.apply(Event::AdvanceSent { txid: "x".into() }),
             Err(Error::UnexpectedEvent { .. })
         ));
-        flow.apply(board(&[grief, mine.clone()], 102)).unwrap();
+        flow.apply(board(&[grief.clone(), mine.clone()], 102))
+            .unwrap();
         assert_eq!(
             flow.state(),
-            &State::Pay {
+            &State::AwaitAssignment {
                 entry: mine.clone()
             }
         );
+        // confirmed is not enough: no advance without the sealed letter
+        assert!(matches!(
+            flow.apply(Event::AdvanceSent { txid: "x".into() }),
+            Err(Error::UnexpectedEvent { .. })
+        ));
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::Pay {
+                entry: mine.clone(),
+                assignment_seals: seals()
+            }
+        );
+        // the last look before paying keeps the state
+        flow.apply(board(&[grief, mine.clone()], 103)).unwrap();
+        assert!(matches!(flow.state(), State::Pay { .. }));
 
         flow.apply(Event::AdvanceSent { txid: "a".into() }).unwrap();
         assert_eq!(
@@ -452,6 +573,56 @@ mod tests {
             &State::Done {
                 entry: mine,
                 advance_txid: "a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn incomplete_or_forged_letters_keep_the_money() {
+        let mut flow = Flow::new(deal(1)).unwrap();
+        let mine = record("e", 20, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&mine), 20)).unwrap();
+        assert!(matches!(flow.state(), State::AwaitAssignment { .. }));
+
+        let s = seals();
+        // supplier only
+        assert!(flow
+            .apply(Event::AssignmentSealed(s[..1].to_vec()))
+            .is_err());
+        // buyer seal forged by the supplier
+        let forged = letter().seal_next(&supplier(), &s[..1]).unwrap();
+        assert!(matches!(
+            flow.apply(Event::AssignmentSealed(vec![s[0].clone(), forged])),
+            Err(Error::Core(jitsuin_core::Error::UnexpectedSigner))
+        ));
+        // already sealed by the financier: the financier seal must go with the money
+        let s2 = letter().seal_next(&financier(), &s).unwrap();
+        let mut all = s.clone();
+        all.push(s2);
+        assert!(flow.apply(Event::AssignmentSealed(all)).is_err());
+        assert!(matches!(flow.state(), State::AwaitAssignment { .. }));
+    }
+
+    #[test]
+    fn late_double_financing_or_reorg_before_paying() {
+        let mine = record("e", 20, entry(ours()));
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(std::slice::from_ref(&mine), 20)).unwrap();
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        let mut reorged = flow.clone();
+        // the supplier signs for a second financier later: stop before paying
+        let other = record("o", 25, entry([0xEE; 32]));
+        flow.apply(board(&[mine.clone(), other], 25)).unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::Stopped(Stop::DoubleFinanced { .. })
+        ));
+        // our entry disappears in a reorg: wait for it again
+        reorged.apply(board(&[], 26)).unwrap();
+        assert_eq!(
+            reorged.state(),
+            &State::AwaitConfirmation {
+                entry_txid: "e".into()
             }
         );
     }
@@ -469,6 +640,7 @@ mod tests {
         for event in [
             Event::SupplierSigned(entry(ours())),
             Event::EntryPosted { txid: "e".into() },
+            Event::AssignmentSealed(seals()),
             Event::AdvanceSent { txid: "a".into() },
             board(&[], 61),
         ] {
@@ -501,19 +673,18 @@ mod tests {
         let mut flow = Flow::new(deal(1)).unwrap();
         let mine = record("e", 20, entry(ours()));
         flow.apply(board(std::slice::from_ref(&mine), 20)).unwrap();
-        assert_eq!(flow.state(), &State::Pay { entry: mine });
+        assert_eq!(flow.state(), &State::AwaitAssignment { entry: mine });
     }
 
     #[test]
     fn rejects_entries_that_do_not_match_the_deal() {
         let mut flow = Flow::new(deal(1)).unwrap();
         flow.apply(board(&[], 1)).unwrap();
-        let other_signer = SigningKey::from_bytes(&[9; 32]);
         let bad = [
-            BoardEntry::sign(&supplier(), EntryKind::Settled, N, ours(), 2, 3),
+            BoardEntry::sign(&supplier(), EntryKind::Settled, n(), ours(), 2, 3),
             BoardEntry::sign(&supplier(), EntryKind::Register, [8; 32], ours(), 2, 3),
             entry([0xEE; 32]),
-            BoardEntry::sign(&other_signer, EntryKind::Register, N, ours(), 2, 3),
+            BoardEntry::sign(&key(9), EntryKind::Register, n(), ours(), 2, 3),
         ];
         for e in bad {
             assert!(matches!(
@@ -530,6 +701,17 @@ mod tests {
         let mut d = deal(1);
         d.advance_zat = 0;
         assert!(Flow::new(d).is_err());
+        // a letter for another invoice
+        let mut d = deal(1);
+        d.assignment.amount_zat += 1;
+        assert!(Flow::new(d).is_err());
+        // the financier is the buyer
+        let mut d = deal(1);
+        d.assignment.financier_pk = d.invoice.buyer_pk;
+        assert!(matches!(
+            Flow::new(d),
+            Err(Error::Core(jitsuin_core::Error::SelfApproval))
+        ));
     }
 
     #[test]
@@ -542,7 +724,7 @@ mod tests {
     #[test]
     fn finds_an_advance_already_sent() {
         let pk = financier().verifying_key().to_bytes();
-        let receipt = Receipt::sign(&financier(), ReceiptKind::Advance, N, 950_000, 1).unwrap();
+        let receipt = Receipt::sign(&financier(), ReceiptKind::Advance, n(), 950_000, 1).unwrap();
         let out = |received, memo: Vec<u8>| TxOutput {
             index: 0,
             pool: "Ironwood".into(),
@@ -557,7 +739,9 @@ mod tests {
             fee_zat: None,
             outputs: vec![o],
         };
-        let memo = receipt.to_memo_bytes().to_vec();
+        let seal = letter().seal_next(&financier(), &seals()).unwrap();
+        let memo =
+            memo::encode(&[MemoItem::Receipt(receipt.clone()), MemoItem::Seal(seal)]).unwrap();
         let other_n = Receipt::sign(&financier(), ReceiptKind::Advance, [8; 32], 1, 1)
             .unwrap()
             .to_memo_bytes()
@@ -566,8 +750,13 @@ mod tests {
             tx("received", out(true, memo.clone())),
             tx("other-n", out(false, other_n)),
             tx("sent", out(false, memo)),
+            tx("legacy", out(false, receipt.to_memo_bytes().to_vec())),
         ];
-        assert_eq!(sent_advance(&txs, &N, &pk).as_deref(), Some("sent"));
-        assert_eq!(sent_advance(&txs[..2], &N, &pk), None);
+        assert_eq!(sent_advance(&txs, &n(), &pk).as_deref(), Some("sent"));
+        assert_eq!(sent_advance(&txs[..2], &n(), &pk), None);
+        assert_eq!(
+            sent_advance(&txs[3..], &n(), &pk).as_deref(),
+            Some("legacy")
+        );
     }
 }
