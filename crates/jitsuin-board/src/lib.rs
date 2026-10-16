@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use jitsuin_core::entry::ENTRY_MAGIC;
 use jitsuin_core::{
-    nullifier, settled_tag, BoardEntry, Bundle, EntryKind, SettledEntry, SettlementDoc,
+    nullifier, settled_tag, BoardEntry, Bundle, DoubleSignProof, EntryAt, EntryKind, Invoice,
+    SettledEntry, SettlementDoc,
 };
 use jitsuin_wallet::{Devtool, Memo};
 
@@ -257,6 +258,86 @@ pub fn bundle_on_board(
     Ok(BundleOnBoard { register, settled })
 }
 
+fn entry_at(r: &BoardRecord) -> EntryAt {
+    EntryAt {
+        txid: r.txid.clone(),
+        height: r.position.height,
+        tx_index: r.position.tx_index,
+        output_index: r.position.output_index,
+    }
+}
+
+/// Double-signature proof after a race: both entries are on the board (HNK-07.T1).
+pub fn proof_from_lookup(
+    lookup: &Lookup,
+    invoice: &Invoice,
+    buyer_signature: [u8; 64],
+) -> Option<DoubleSignProof> {
+    let Lookup::DoubleFinanced {
+        winner,
+        conflicting,
+        ..
+    } = lookup
+    else {
+        return None;
+    };
+    let second = conflicting.first()?;
+    Some(DoubleSignProof {
+        invoice: invoice.clone(),
+        buyer_signature,
+        first: winner.entry.clone(),
+        second: second.entry.clone(),
+        first_at: Some(entry_at(winner)),
+        second_at: Some(entry_at(second)),
+    })
+}
+
+/// Double-signature proof without any transaction: the supplier offered `offered` to this
+/// financier, but `winner` already registers the invoice for someone else.
+pub fn proof_from_offer(
+    winner: &BoardRecord,
+    offered: BoardEntry,
+    invoice: &Invoice,
+    buyer_signature: [u8; 64],
+) -> DoubleSignProof {
+    DoubleSignProof {
+        invoice: invoice.clone(),
+        buyer_signature,
+        first: winner.entry.clone(),
+        second: offered,
+        first_at: Some(entry_at(winner)),
+        second_at: None,
+    }
+}
+
+/// Checks the positions a proof claims: each entry with a position is on the board exactly
+/// there, and the first entry comes before the second when both are on chain.
+pub fn verify_proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -> bool {
+    let found = |e: &BoardEntry, at: &EntryAt| {
+        records.iter().any(|r| {
+            &r.entry == e
+                && r.txid == at.txid
+                && r.position
+                    == Position {
+                        height: at.height,
+                        tx_index: at.tx_index,
+                        output_index: at.output_index,
+                    }
+        })
+    };
+    let ok = |e: &BoardEntry, at: &Option<EntryAt>| at.as_ref().is_none_or(|at| found(e, at));
+    let ordered = match (&proof.first_at, &proof.second_at) {
+        (Some(a), Some(b)) => {
+            (a.height, a.tx_index, a.output_index) < (b.height, b.tx_index, b.output_index)
+        }
+        _ => true,
+    };
+    proof.first_at.is_some()
+        && ok(&proof.first, &proof.first_at)
+        && ok(&proof.second, &proof.second_at)
+        && ordered
+}
+
 /// Syncs the watch-only board wallet, fetches full transactions (memos), resolves tx order from
 /// lightwalletd, and returns every entry in total order.
 pub fn scan(watch: &Devtool, lightwalletd: &str) -> Result<ScanReport, Error> {
@@ -421,6 +502,58 @@ mod tests {
         let mut other = doc;
         other.amount_zat += 1;
         assert!(settled(&c.settled, &other, &buyer_pk, &fin_pk).is_none());
+    }
+
+    #[test]
+    fn double_sign_proofs_from_a_race_and_from_an_offer() {
+        let supplier = SigningKey::from_bytes(&[1; 32]);
+        let buyer = SigningKey::from_bytes(&[2; 32]);
+        let invoice = Invoice {
+            invoice_id: "TES-INV-0003".into(),
+            supplier_ephemeral_pk: supplier.verifying_key().to_bytes(),
+            buyer_pk: buyer.verifying_key().to_bytes(),
+            amount_zat: 40_000,
+            issue_date: 1,
+            due_date: 31,
+            terms_hash: [9; 32],
+        };
+        let sig = jitsuin_core::sign_invoice(&buyer, &invoice)
+            .unwrap()
+            .to_bytes();
+        let n = nullifier(&invoice).unwrap();
+        let rec = |txid: &str, height, commitment| BoardRecord {
+            txid: txid.repeat(32),
+            position: Position {
+                height,
+                tx_index: 0,
+                output_index: 1,
+            },
+            entry: BoardEntry::sign(&supplier, EntryKind::Register, n, commitment, 0, 0),
+        };
+        let records = vec![rec("aa", 10, [0xA1; 32]), rec("bb", 11, [0xB2; 32])];
+        let pk = supplier.verifying_key().to_bytes();
+
+        // race: both on chain
+        let l = lookup(&records, &n, &pk);
+        let p = proof_from_lookup(&l, &invoice, sig).unwrap();
+        p.verify().unwrap();
+        assert!(verify_proof_on_board(&p, &records));
+        let mut moved = p.clone();
+        moved.second_at.as_mut().unwrap().height = 9;
+        assert!(!verify_proof_on_board(&moved, &records));
+
+        // offer: B holds the supplier-signed entry, A is on the board; nothing posted by B
+        let offered = BoardEntry::sign(&supplier, EntryKind::Register, n, [0xC3; 32], 0, 0);
+        let only_a = &records[..1];
+        let Lookup::Registered { winner, .. } = lookup(only_a, &n, &pk) else {
+            panic!()
+        };
+        let p = proof_from_offer(&winner, offered, &invoice, sig);
+        let r = p.verify().unwrap();
+        assert_eq!(r.second_commitment, [0xC3; 32]);
+        assert!(verify_proof_on_board(&p, only_a));
+        // no proof when the lookup is not a double financing
+        assert!(proof_from_lookup(&lookup(only_a, &n, &pk), &invoice, sig).is_none());
     }
 
     #[test]
