@@ -183,7 +183,7 @@ pub fn lookup(
     let mut ignored_invalid = Vec::new();
     for r in records
         .iter()
-        .filter(|r| r.entry.kind == EntryKind::Register && &r.entry.nullifier == nullifier)
+        .filter(|r| r.entry.kind.is_register() && &r.entry.nullifier == nullifier)
     {
         if r.entry.verify(supplier_ephemeral_pk).is_ok() {
             valid.push(r.clone());

@@ -15,8 +15,7 @@ use ed25519_dalek::SigningKey;
 use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
-    nullifier, Assignment, BoardEntry, ChainStatus, EntryKind, Invoice, Receipt, ReceiptKind, Role,
-    Seal, ENTRY_LEN,
+    nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt, ReceiptKind, Role, Seal,
 };
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
@@ -254,7 +253,7 @@ impl Flow {
     }
 
     fn check_entry(&self, entry: &BoardEntry) -> Result<(), Error> {
-        if entry.kind != EntryKind::Register {
+        if !entry.kind.is_register() {
             return Err(Error::EntryMismatch("entry kind is not register"));
         }
         if entry.nullifier != self.nullifier {
@@ -335,7 +334,7 @@ impl Financier {
         let State::Register { entry } = flow.state() else {
             return Err(unexpected(flow, "register"));
         };
-        let memo = entry.to_memo_bytes()[..ENTRY_LEN].to_vec();
+        let memo = entry.to_memo_bytes()[..entry.encoded_len()].to_vec();
         self.wallet.sync()?;
         let txid = self.wallet.pay(&[Payment {
             address: self.board_address.clone(),
@@ -413,7 +412,7 @@ fn unexpected(flow: &Flow, event: &'static str) -> Error {
 mod tests {
     use super::*;
     use jitsuin_board::Position;
-    use jitsuin_core::financier_commitment;
+    use jitsuin_core::{financier_commitment, EntryKind};
     use jitsuin_wallet::TxOutput;
 
     fn key(b: u8) -> SigningKey {
