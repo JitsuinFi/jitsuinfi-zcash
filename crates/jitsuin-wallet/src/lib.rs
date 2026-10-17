@@ -177,6 +177,12 @@ impl Devtool {
             .ok_or_else(|| Error::Parse("no default address".into()))
     }
 
+    /// Total value the account holds, in zatoshi: every pool, spendable or pending. Works for
+    /// watch-only wallets (a full viewing key sees spends too).
+    pub fn balance_zat(&self) -> Result<u64, Error> {
+        parse_balance(&self.run(&["balance"])?)
+    }
+
     pub fn list_tx(&self) -> Result<Vec<WalletTx>, Error> {
         parse_list_tx(&self.run(&["list-tx"])?)
     }
@@ -218,6 +224,37 @@ const RETRIES: u32 = 3;
 fn is_transient(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.contains("transport error") || m.contains("timed out") || m.contains("unavailable")
+}
+
+/// Sums every `Zatoshis(n)` amount of the balance fields in `wallet balance` output.
+pub fn parse_balance(out: &str) -> Result<u64, Error> {
+    const FIELDS: [&str; 5] = [
+        "spendable_value:Zatoshis(",
+        "locked_value:Zatoshis(",
+        "change_pending_confirmation:Zatoshis(",
+        "value_pending_spendability:Zatoshis(",
+        "uneconomic_value:Zatoshis(",
+    ];
+    let compact: String = out.chars().filter(|c| !c.is_whitespace()).collect();
+    if !compact.contains("account_balances") {
+        return Err(Error::Parse("no balance in output".into()));
+    }
+    let mut total: u64 = 0;
+    for field in FIELDS {
+        for (i, _) in compact.match_indices(field) {
+            let digits: String = compact[i + field.len()..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            let v: u64 = digits
+                .parse()
+                .map_err(|_| Error::Parse(format!("bad amount after {field}")))?;
+            total = total
+                .checked_add(v)
+                .ok_or_else(|| Error::Parse("balance overflow".into()))?;
+        }
+    }
+    Ok(total)
 }
 
 /// ZIP-321 payment request. Memos are base64url (no padding) of the raw memo bytes.
@@ -422,6 +459,19 @@ d759bbf2605a9cc9a220dbc0383645133c01bb722a38fc22a0f13b36355d2ac0
         assert!(txs[1].outputs[2].is_change);
         assert_eq!(txs[1].outputs[2].value_zat, 24_931_250);
         assert!(!txs[1].touches_transparent());
+    }
+
+    #[test]
+    fn parses_balance_of_every_pool() {
+        let out = "WalletSummary { account_balances: { AccountUuid(x): AccountBalance {
+            sapling_balance: Balance { spendable_value: Zatoshis(\n 5,\n), locked_value: Zatoshis(0,),
+              change_pending_confirmation: Zatoshis(0,), value_pending_spendability: Zatoshis(0,),
+              uneconomic_value: Zatoshis(0,), },
+            ironwood_balance: Balance { spendable_value: Zatoshis(99592000,), locked_value: Zatoshis(0,),
+              change_pending_confirmation: Zatoshis(10000,), value_pending_spendability: Zatoshis(3,),
+              uneconomic_value: Zatoshis(0,), }, }, }, chain_tip_height: BlockHeight(4511015,) }";
+        assert_eq!(parse_balance(out).unwrap(), 99_602_008);
+        assert!(parse_balance("Error: nope").is_err());
     }
 
     #[test]

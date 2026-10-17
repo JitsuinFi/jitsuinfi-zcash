@@ -15,7 +15,8 @@ use ed25519_dalek::SigningKey;
 use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
-    nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt, ReceiptKind, Role, Seal,
+    nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt, ReceiptKind, ReceivableNote,
+    Role, Seal,
 };
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
@@ -370,7 +371,8 @@ impl Financier {
     }
 
     /// Pays the advance to the supplier (state `Pay`) after a last board check. The memo carries
-    /// the advance receipt and this financier's seal on the assignment letter (Sign-to-Pay). If
+    /// the advance receipt, this financier's seal on the assignment letter (Sign-to-Pay) and a
+    /// receivable note for the fund's members (HNK-15). If
     /// this wallet already sent an advance receipt for the nullifier, records that txid instead.
     pub fn pay_advance<'f>(&self, flow: &'f mut Flow, date: u32) -> Result<&'f State, Error> {
         if !matches!(flow.state(), State::Pay { .. }) {
@@ -397,7 +399,17 @@ impl Financier {
         }
         let receipt = Receipt::sign(&self.key, ReceiptKind::Advance, n, deal.advance_zat, date)?;
         let seal = deal.assignment.seal_next(&self.key, &assignment_seals)?;
-        let memo = memo::encode(&[MemoItem::Receipt(receipt), MemoItem::Seal(seal)])?;
+        // The receivable note lets holders of the fund's viewing key value the invoice (HNK-15).
+        let note = ReceivableNote {
+            nullifier: n,
+            face_zat: deal.invoice.amount_zat,
+            due_date: deal.invoice.due_date,
+        };
+        let memo = memo::encode(&[
+            MemoItem::Receipt(receipt),
+            MemoItem::Seal(seal),
+            MemoItem::Note(note),
+        ])?;
         let txid = self.wallet.pay(&[Payment {
             address: deal.supplier_address,
             amount_zat: deal.advance_zat,

@@ -59,6 +59,8 @@ pub fn received(
                 match item {
                     MemoItem::Receipt(r) => receipts.push(r),
                     MemoItem::Seal(s) => seals.push(s),
+                    // Fund notes and roots (HNK-15) travel next to receipts; not used here.
+                    MemoItem::Note(_) | MemoItem::Root(_) => {}
                 }
             }
             // Exactly one receipt per output; anything else is not a receipt memo.

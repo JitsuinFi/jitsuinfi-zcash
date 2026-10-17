@@ -8,11 +8,14 @@
 //! |---------|--------|-------------------------|
 //! | receipt | `JTR1` | 145                     |
 //! | seal    | `JTL1` | 200                     |
+//! | note    | `JTN1` | 48 (receivable, fund)   |
+//! | root    | `JTLR` | 144 (liabilities, fund) |
 //!
 //! A memo with one receipt is byte-identical to [`Receipt::to_memo_bytes`].
 
 use crate::entry::{MEMO_ARBITRARY_DATA, MEMO_LEN};
 use crate::error::Error;
+use crate::fund::{LiabilityRoot, ReceivableNote, NOTE_LEN, NOTE_MAGIC, ROOT_LEN, ROOT_MAGIC};
 use crate::receipt::{Receipt, RECEIPT_LEN, RECEIPT_MAGIC};
 use crate::seal::{Seal, SEAL_LEN, SEAL_MAGIC};
 
@@ -20,6 +23,8 @@ use crate::seal::{Seal, SEAL_LEN, SEAL_MAGIC};
 pub enum MemoItem {
     Receipt(Receipt),
     Seal(Seal),
+    Note(ReceivableNote),
+    Root(LiabilityRoot),
 }
 
 /// Marker plus items, without padding (what goes into a ZIP-321 URI). At most 512 bytes.
@@ -29,6 +34,8 @@ pub fn encode(items: &[MemoItem]) -> Result<Vec<u8>, Error> {
         match item {
             MemoItem::Receipt(r) => out.extend_from_slice(&r.to_memo_bytes()[1..RECEIPT_LEN]),
             MemoItem::Seal(s) => out.extend_from_slice(&s.to_bytes()),
+            MemoItem::Note(n) => out.extend_from_slice(&n.to_bytes()),
+            MemoItem::Root(r) => out.extend_from_slice(&r.to_bytes()),
         }
     }
     if out.len() > MEMO_LEN {
@@ -60,6 +67,14 @@ pub fn decode(memo: &[u8]) -> Result<Vec<MemoItem>, Error> {
             let body = rest.get(..SEAL_LEN).ok_or(Error::Truncated)?;
             items.push(MemoItem::Seal(Seal::from_bytes(body)?));
             rest = &rest[SEAL_LEN..];
+        } else if magic == NOTE_MAGIC {
+            let body = rest.get(..NOTE_LEN).ok_or(Error::Truncated)?;
+            items.push(MemoItem::Note(ReceivableNote::from_bytes(body)?));
+            rest = &rest[NOTE_LEN..];
+        } else if magic == ROOT_MAGIC {
+            let body = rest.get(..ROOT_LEN).ok_or(Error::Truncated)?;
+            items.push(MemoItem::Root(LiabilityRoot::from_bytes(body)?));
+            rest = &rest[ROOT_LEN..];
         } else {
             return Err(Error::BadMagic);
         }

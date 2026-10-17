@@ -5,6 +5,7 @@
 //! - [`buyer`]: repayment request (ZIP-321 URI and QR) with a buyer-signed receipt.
 //! - [`settlement`]: financier detects the repayment, records it as settled, optionally posts a
 //!   `settled` entry to the board.
+//! - [`fund`]: JitsuinFi Vault solvency computed by a member from the fund's viewing key (HNK-15).
 //! - [`history`]: the buyer's history chain checked against the board and the minimum standard
 //!   before a new invoice is registered (HNK-20).
 
@@ -13,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod buyer;
 pub mod financier;
+pub mod fund;
 pub mod history;
 pub mod receipts;
 pub mod settlement;
