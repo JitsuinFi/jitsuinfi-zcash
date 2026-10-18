@@ -16,3 +16,8 @@ wallet-*/
 
 # local tooling
 .DS_Store
+
+# keys (HNK-16): signing keys, PEM files, local key folders
+*.key
+*.pem
+keys/
