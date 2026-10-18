@@ -364,3 +364,78 @@ pub fn supplier_seal_assignment(
     a.verify(&inv, &[]).map_err(err)?;
     Ok(b64(&a.seal_next(&key, &[]).map_err(err)?.to_bytes()))
 }
+
+/// Public key (hex) of a 32-byte secret, for the supplier's per-invoice key made in the browser.
+pub fn public_key(secret_hex: &str) -> ApiResult<String> {
+    Ok(hex(&SigningKey::from_bytes(&unhex::<32>(secret_hex)?)
+        .verifying_key()
+        .to_bytes()))
+}
+
+/// Invoice fields as JSON (keys and hashes hex), for showing what is being signed.
+pub fn invoice_decode(invoice_b64: &str) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    Ok(json!({
+        "invoice_id": inv.invoice_id,
+        "supplier_pk": hex(&inv.supplier_ephemeral_pk),
+        "buyer_pk": hex(&inv.buyer_pk),
+        "amount_zat": inv.amount_zat,
+        "issue_date": inv.issue_date,
+        "due_date": inv.due_date,
+        "terms_hash": hex(&inv.terms_hash),
+        "nullifier": hex(&nullifier(&inv).map_err(err)?),
+    })
+    .to_string())
+}
+
+/// Assignment letter (base64url) of `invoice_b64` to the financier key and pay address.
+pub fn assignment_encode(
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    financier_address: &str,
+    terms_hash_hex: &str,
+) -> ApiResult<String> {
+    let a = Assignment::for_invoice(
+        &invoice(invoice_b64)?,
+        unhex(financier_pk_hex)?,
+        financier_address,
+        unhex(terms_hash_hex)?,
+    )
+    .map_err(err)?;
+    Ok(b64(&a.to_canonical_bytes().map_err(err)?))
+}
+
+#[derive(Deserialize)]
+struct BundleJson {
+    invoice: String,
+    buyer_signature: String,
+    #[serde(default)]
+    assignment: Option<String>,
+    #[serde(default)]
+    seals: Vec<String>,
+    #[serde(default)]
+    with_settlement: bool,
+}
+
+/// Verification bundle (base64url) from its parts; verified before it is returned.
+pub fn bundle_build(json_text: &str) -> ApiResult<String> {
+    let j: BundleJson = serde_json::from_str(json_text).map_err(err)?;
+    let assignment = j.assignment.as_deref().map(assignment).transpose()?;
+    let settlement = match (&assignment, j.with_settlement) {
+        (Some(a), true) => Some(SettlementDoc::for_assignment(a)),
+        _ => None,
+    };
+    let b = Bundle {
+        invoice: invoice(&j.invoice)?,
+        buyer_signature: unhex(&j.buyer_signature)?,
+        assignment,
+        assignment_seals: j
+            .seals
+            .iter()
+            .map(|s| Seal::from_bytes(&unb64(s)?).map_err(err))
+            .collect::<ApiResult<_>>()?,
+        settlement,
+    };
+    b.verify().map_err(err)?;
+    Ok(b64(&b.to_bytes().map_err(err)?))
+}

@@ -141,5 +141,35 @@ pub fn verify_history(
     ))
 }
 
+#[wasm_bindgen(js_name = publicKey)]
+pub fn public_key(secret_hex: &str) -> Result<String, JsError> {
+    js(api::public_key(secret_hex))
+}
+
+#[wasm_bindgen(js_name = invoiceDecode)]
+pub fn invoice_decode(invoice_b64: &str) -> Result<String, JsError> {
+    js(api::invoice_decode(invoice_b64))
+}
+
+#[wasm_bindgen(js_name = assignmentEncode)]
+pub fn assignment_encode(
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    financier_address: &str,
+    terms_hash_hex: &str,
+) -> Result<String, JsError> {
+    js(api::assignment_encode(
+        invoice_b64,
+        financier_pk_hex,
+        financier_address,
+        terms_hash_hex,
+    ))
+}
+
+#[wasm_bindgen(js_name = bundleBuild)]
+pub fn bundle_build(json: &str) -> Result<String, JsError> {
+    js(api::bundle_build(json))
+}
+
 #[cfg(test)]
 mod tests;

@@ -223,3 +223,33 @@ fn history_and_proofs_in_the_browser() {
     let p = parse(&api::verify_proof(&b64(&proof.to_bytes().unwrap())).unwrap());
     assert_eq!(p["second_commitment"], "b2".repeat(32));
 }
+
+#[test]
+fn screen_helpers_build_a_verifiable_bundle() {
+    let inv_b64 = invoice_b64();
+    assert_eq!(
+        api::public_key(&"01".repeat(32)).unwrap(),
+        hex(&key(1).verifying_key().to_bytes())
+    );
+    let fields = parse(&api::invoice_decode(&inv_b64).unwrap());
+    assert_eq!(fields["invoice_id"], "TES-INV-0005");
+    let fin_pk = hex(&key(3).verifying_key().to_bytes());
+    let a_b64 =
+        api::assignment_encode(&inv_b64, &fin_pk, "utest1financier", &"05".repeat(32)).unwrap();
+    let s0 = api::supplier_seal_assignment(&"01".repeat(32), &inv_b64, &a_b64).unwrap();
+    let s1 = api::buyer_seal_assignment(MASTER, 0, &inv_b64, &a_b64, &s0).unwrap();
+    let sig = api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap();
+    let bundle = api::bundle_build(
+        &serde_json::json!({ "invoice": inv_b64, "buyer_signature": sig, "assignment": a_b64,
+                             "seals": [s0, s1], "with_settlement": true })
+        .to_string(),
+    )
+    .unwrap();
+    let v = parse(&api::verify_bundle(&bundle).unwrap());
+    assert_eq!(v["assignment"], "AwaitingSeal:Financier");
+    // a bundle with a forged signature is refused at build time
+    assert!(api::bundle_build(
+        &serde_json::json!({ "invoice": inv_b64, "buyer_signature": "00".repeat(64) }).to_string()
+    )
+    .is_err());
+}
