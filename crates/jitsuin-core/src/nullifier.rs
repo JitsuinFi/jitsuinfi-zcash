@@ -57,6 +57,22 @@ mod tests {
     }
 
     #[test]
+    fn canonical_and_signature_vectors() {
+        // HNK-01 vectors from vault `Format Data` and the registry specification.
+        let inv = vector();
+        assert_eq!(
+            hex(&inv.to_canonical_bytes().unwrap()),
+            "4a545349010c5445532d494e562d303030318a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b39400ca9a3b00000000994f0000d54f00000909090909090909090909090909090909090909090909090909090909090909"
+        );
+        let sig = crate::invoice::sign_invoice(&SigningKey::from_bytes(&[2; 32]), &inv).unwrap();
+        assert_eq!(
+            hex(&sig.to_bytes()),
+            "11b59c4dbce361601b4ba66f246b4ca17469722f506e23fa8d63de28b6acc142b091392510709c67fedd800bc93b8e7a7321c362363c8d04ca164d2a1e76cb0b"
+        );
+        crate::invoice::verify_invoice(&inv, &sig).unwrap();
+    }
+
+    #[test]
     fn nullifier_vector() {
         // Cross-checked with Python:
         // hashlib.blake2b(canonical, digest_size=32, person=b"JitsuinNullifier")
