@@ -11,6 +11,44 @@ Crates:
 - `crates/jitsuin-flow`: role flows: financier state machine with Sign-to-Pay, supplier and buyer helpers, repayment watchdog, minimum standard before registration.
 - `crates/jitsuin-wasm`: the browser side: buyer keys from a passkey PRF output, invoice and letter signing, repayment QR, client-side verification of bundles, proofs and histories.
 
+## How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Supplier
+    participant B as Buyer
+    participant F as Financier
+    participant R as Registry board<br/>(public viewing key)
+    S->>B: canonical invoice (per-invoice key)
+    B->>S: buyer signature (key from passkey)
+    F->>R: check N = H(invoice): not registered
+    S->>F: entry signed for F's commitment
+    F->>R: register entry (shielded memo)
+    R-->>F: confirmed, first valid entry
+    F->>S: assignment letter
+    S->>B: supplier seal
+    B->>F: buyer seal (acknowledges the assignment)
+    F->>S: advance + receipt + financier seal (one shielded tx)
+    B->>F: repayment + receipt + claim (ZIP-321 QR)
+    F->>R: settled entry: buyer + financier signatures
+    Note over R: Outsiders see hashes only.<br/>A second financier finds N and gets<br/>a proof that the supplier signed twice.
+```
+
+```mermaid
+flowchart LR
+    core[jitsuin-core<br/>formats, signatures, seals] --> board[jitsuin-board<br/>scanner, lookup, history]
+    core --> wasm[jitsuin-wasm<br/>browser]
+    board --> flow[jitsuin-flow<br/>financier, watchdog, fund]
+    wallet[jitsuin-wallet<br/>zcash-devtool] --> board
+    wallet --> flow
+    board --> wasm
+    wasm --> fe[jitsuinfi-frontend<br/>web app]
+    flow --> be[financier backend]
+    board -. lightwalletd .-> zec[(Zcash testnet<br/>Ironwood pool)]
+    wallet -. lightwalletd .-> zec
+```
+
 ## Specification
 
 [Shielded Receivable Registry](docs/zip-shielded-receivable-registry.md): ZIP-style specification of every format and rule, with test vectors asserted by the unit tests.
