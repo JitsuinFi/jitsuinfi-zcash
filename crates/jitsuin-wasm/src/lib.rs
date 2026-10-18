@@ -171,5 +171,10 @@ pub fn bundle_build(json: &str) -> Result<String, JsError> {
     js(api::bundle_build(json))
 }
 
+#[wasm_bindgen(js_name = boardMemoDescribe)]
+pub fn board_memo_describe(memo_b64: &str) -> Result<String, JsError> {
+    js(api::board_memo_describe(memo_b64))
+}
+
 #[cfg(test)]
 mod tests;

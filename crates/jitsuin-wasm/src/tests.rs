@@ -253,3 +253,13 @@ fn screen_helpers_build_a_verifiable_bundle() {
     )
     .is_err());
 }
+
+#[test]
+fn outsiders_only_see_hashes() {
+    let n = jitsuin_core::nullifier(&invoice()).unwrap();
+    let e = BoardEntry::sign(&key(1), EntryKind::Register, n, [0xBB; 32], 2, 3);
+    let d = parse(&api::board_memo_describe(&b64(&e.to_memo_bytes())).unwrap());
+    assert_eq!(d["kind"], "Register");
+    assert_eq!(d["nullifier"], hex(&n));
+    assert!(api::board_memo_describe(&b64(&[0xFF, 1, 2])).is_err());
+}

@@ -439,3 +439,48 @@ pub fn bundle_build(json_text: &str) -> ApiResult<String> {
     b.verify().map_err(err)?;
     Ok(b64(&b.to_bytes().map_err(err)?))
 }
+
+/// What anyone can read from one board memo: only hashes and opaque signatures. Nothing in it
+/// names the parties, the amount or the invoice; signatures cannot be checked without the invoice.
+pub fn board_memo_describe(memo_b64: &str) -> ApiResult<String> {
+    let memo = unb64(memo_b64)?;
+    let mut c = Collected::default();
+    c.add(
+        "",
+        Position {
+            height: 0,
+            tx_index: 0,
+            output_index: 0,
+        },
+        &memo,
+    );
+    if let Some(r) = c.records.first() {
+        let e = &r.entry;
+        return Ok(json!({
+            "kind": format!("{:?}", e.kind),
+            "nullifier": hex(&e.nullifier),
+            "financier_commitment": hex(&e.financier_commitment),
+            "discount_bucket": e.discount_bucket,
+            "tenor_bucket": e.tenor_bucket,
+            "history_tag": e.history_tag.map(|t| hex(&t)),
+            "signature": hex(&e.supplier_sig),
+        })
+        .to_string());
+    }
+    if let Some(s) = c.settled.first() {
+        let e = &s.entry;
+        return Ok(json!({
+            "kind": "Settled",
+            "settled_tag": hex(&e.tag),
+            "on_time": e.on_time(),
+            "buyer_signature": hex(&e.buyer_sig),
+            "financier_signature": hex(&e.financier_sig),
+        })
+        .to_string());
+    }
+    Err(c
+        .rejected
+        .first()
+        .map(|r| r.reason.clone())
+        .unwrap_or_else(|| "not a JitsuinFi board memo".into()))
+}
