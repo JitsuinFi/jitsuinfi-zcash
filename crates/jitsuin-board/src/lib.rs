@@ -15,7 +15,7 @@ use std::time::Instant;
 use jitsuin_core::entry::ENTRY_MAGIC;
 use jitsuin_core::{
     nullifier, settled_tag, BoardEntry, Bundle, DoubleSignProof, EntryAt, EntryKind, Invoice,
-    SettledEntry, SettlementDoc,
+    RateIndex, SettledEntry, SettlementDoc,
 };
 #[cfg(feature = "net")]
 use jitsuin_wallet::Devtool;
@@ -355,6 +355,14 @@ pub fn verify_proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -
         && ordered
 }
 
+/// Public rate index of the board (HNK-08). Records are put in board order first, so every
+/// scanner of the same board gets the same index whatever order it collected them in.
+pub fn rate_index(records: &[BoardRecord], k: usize) -> RateIndex {
+    let mut ordered: Vec<&BoardRecord> = records.iter().collect();
+    ordered.sort_by_key(|r| r.position);
+    RateIndex::compute(ordered.into_iter().map(|r| &r.entry), k)
+}
+
 #[cfg(feature = "net")]
 /// Syncs the watch-only board wallet, fetches full transactions (memos), resolves tx order from
 /// lightwalletd, and returns every entry in total order.
@@ -639,6 +647,40 @@ mod tests {
         assert_eq!(positions, vec![("a", 0), ("b", 1)]);
         assert_eq!(rejected.len(), 1);
         assert_eq!(rejected[0].reason, "unknown magic bytes");
+    }
+
+    #[test]
+    fn rate_index_is_the_same_in_any_collection_order() {
+        let s = SigningKey::from_bytes(&[1; 32]);
+        let mut records: Vec<BoardRecord> = (0..7u8)
+            .map(|n| BoardRecord {
+                txid: format!("{n}"),
+                position: Position {
+                    height: 100 + u32::from(n),
+                    tx_index: 0,
+                    output_index: 0,
+                },
+                entry: BoardEntry::sign(&s, EntryKind::Register, [n; 32], [2; 32], 3, 2),
+            })
+            .collect();
+        // A later entry for N 0 with other classes: only the first one in board order counts.
+        records.push(BoardRecord {
+            txid: "late".into(),
+            position: Position {
+                height: 200,
+                tx_index: 0,
+                output_index: 0,
+            },
+            entry: BoardEntry::sign(&s, EntryKind::Register, [0; 32], [3; 32], 7, 5),
+        });
+        let ordered = rate_index(&records, jitsuin_core::index::K);
+        records.reverse();
+        assert_eq!(rate_index(&records, jitsuin_core::index::K), ordered);
+        let row = ordered.tenors[1].published.as_ref().unwrap();
+        assert_eq!(
+            (ordered.invoices, row.invoices, row.median_discount),
+            (7, 7, 3)
+        );
     }
 
     #[test]

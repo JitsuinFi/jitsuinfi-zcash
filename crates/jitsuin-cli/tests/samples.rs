@@ -1,5 +1,5 @@
-//! End-to-end tests of the `jitsuin` binary on the sample board in `examples/verify/`
-//! (U-HNK-09.1, U-HNK-09.2). The samples are rebuilt here from fixed keys and must match the
+//! End-to-end tests of the `jitsuin` binary on the sample boards in `examples/verify/`
+//! (U-HNK-09.1, U-HNK-09.2) and `examples/index/` (HNK-08). The samples are rebuilt here from fixed keys and must match the
 //! committed files byte for byte; `JITSUIN_REGEN=1 cargo test -p jitsuin-cli --test samples`
 //! rewrites them after an intended change.
 
@@ -19,6 +19,8 @@ const BOARD: &str = "examples/verify/board-sample.json";
 const PROOF: &str = "examples/verify/proof-sample.txt";
 const BUNDLE: &str = "examples/verify/bundle-sample.txt";
 const EXPECTED: &str = "examples/verify/expected-output.txt";
+const INDEX_BOARD: &str = "examples/index/board-sample.json";
+const INDEX_EXPECTED: &str = "examples/index/expected-output.txt";
 /// 2026-10-19 in days since the Unix epoch.
 const TODAY: u32 = 20_745;
 
@@ -205,6 +207,60 @@ fn write_samples(s: &Samples) {
     std::fs::write(root().join(BOARD), &s.board).unwrap();
     std::fs::write(root().join(PROOF), &s.proof).unwrap();
     std::fs::write(root().join(BUNDLE), &s.bundle).unwrap();
+    std::fs::create_dir_all(root().join("examples/index")).unwrap();
+    std::fs::write(root().join(INDEX_BOARD), index_board()).unwrap();
+}
+
+/// A small market for the rate index: 17 invoices (one with two entries), classes picked so
+/// that two tenor classes reach k = 5 and three do not, plus one 0/0 and one invalid entry.
+fn index_board() -> String {
+    let mut c = Collected::default();
+    let mut i = 0u32;
+    let mut post = |n: u8, discount: u8, tenor: u8, kind: EntryKind| {
+        let supplier = key(n);
+        let entry = match kind {
+            EntryKind::RegisterWithHistory => BoardEntry::sign_with_history(
+                &supplier,
+                [n; 32],
+                [n ^ 0x55; 32],
+                discount,
+                tenor,
+                [n ^ 0xaa; 32],
+            ),
+            _ => BoardEntry::sign(&supplier, kind, [n; 32], [n ^ 0x55; 32], discount, tenor),
+        };
+        let (txid, position) = at(&format!("{:02x}", 0xd0 + i), 4_601_000 + 7 * i, i % 3, 0);
+        c.add(&txid, position, &entry.to_memo_bytes());
+        i += 1;
+    };
+    // 31-60 days: six at 2-3%, three at 1-2%.
+    for n in 1..=6 {
+        post(n, 3, 2, EntryKind::Register);
+    }
+    for n in 7..=9 {
+        post(n, 2, 2, EntryKind::RegisterWithHistory);
+    }
+    // 61-90 days: five at 3-5%.
+    for n in 10..=14 {
+        post(n, 4, 3, EntryKind::Register);
+    }
+    post(15, 1, 1, EntryKind::Register); // <= 30 days: one invoice, not shown
+    post(16, 0, 0, EntryKind::Register); // not disclosed
+    post(17, 9, 9, EntryKind::Register); // invalid classes
+    post(1, 7, 5, EntryKind::Register); // second entry for N 1: counted once, with 3/2
+    c.sort();
+    let items: Vec<serde_json::Value> = c
+        .records
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "txid": r.txid, "height": r.position.height, "tx_index": r.position.tx_index,
+                "output_index": r.position.output_index,
+                "memo": URL_SAFE_NO_PAD.encode(r.entry.to_memo_bytes()),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&items).unwrap() + "\n"
 }
 
 #[test]
@@ -217,6 +273,7 @@ fn samples_are_reproducible_from_the_code() {
     assert_eq!(read(BOARD), s.board);
     assert_eq!(read(PROOF), s.proof);
     assert_eq!(read(BUNDLE), s.bundle);
+    assert_eq!(read(INDEX_BOARD), index_board());
 }
 
 #[test]
@@ -314,4 +371,63 @@ fn usage_and_input_errors_exit_2() {
     assert!(out.contains("jitsuin verify (--ufvk <UFVK> | --board <FILE>)"));
     let (code, out, _) = jitsuin(&["--version"]);
     assert_eq!((code, out.as_str()), (0, "jitsuin 0.1.0\n"));
+}
+
+#[test]
+fn index_sample_matches_the_expected_output() {
+    if regen() {
+        write_samples(&samples());
+    }
+    let (code, out, err) = jitsuin(&["index", "--board", INDEX_BOARD]);
+    if regen() {
+        std::fs::write(root().join(INDEX_EXPECTED), &out).unwrap();
+    }
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(out, read(INDEX_EXPECTED));
+    assert!(out.contains("k = 5"));
+    assert!(out.contains("18 register entries, 17 invoices"));
+}
+
+#[test]
+fn index_json_and_higher_k() {
+    let (code, out, _) = jitsuin(&["index", "--board", INDEX_BOARD, "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (v["k"].as_u64(), v["invoices"].as_u64()),
+        (Some(5), Some(17))
+    );
+    assert_eq!(
+        (v["undisclosed"].as_u64(), v["invalid"].as_u64()),
+        (Some(1), Some(1))
+    );
+    let tenors = v["tenors"].as_array().unwrap();
+    let shown: Vec<_> = tenors.iter().filter(|t| t["published"] == true).collect();
+    assert_eq!(shown.len(), 2);
+    assert_eq!(shown[0]["label"], "31-60 days");
+    assert_eq!(shown[0]["invoices"], 9);
+    assert_eq!(shown[0]["median_discount"]["label"], "2-3%");
+    assert_eq!(shown[0]["other"], 3);
+    assert_eq!(shown[1]["median_discount"]["label"], "3-5%");
+    // Unpublished classes carry no count.
+    assert!(tenors[0].get("invoices").is_none());
+    assert_eq!(v["classes"]["discount_bps"].as_array().unwrap().len(), 7);
+
+    let (_, out, _) = jitsuin(&["index", "--board", INDEX_BOARD, "--json", "--k", "6"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let shown = v["tenors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["published"] == true)
+        .count();
+    assert_eq!((v["k"].as_u64(), shown), (Some(6), 1));
+
+    // The verify sample has two invoices only: nothing reaches k.
+    let (code, out, _) = jitsuin(&["index", "--board", BOARD]);
+    assert_eq!(code, 0);
+    assert_eq!(out.matches("fewer than 5 invoices").count(), 5);
+    let (code, _, err) = jitsuin(&["index", "--board", INDEX_BOARD, "--k", "2"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("at least 5"));
 }
