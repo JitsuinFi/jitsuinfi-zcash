@@ -10,6 +10,7 @@ use base64::Engine;
 use jitsuin_board::{Collected, Position};
 use jitsuin_wallet::Devtool;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::args::{LiveArgs, Network, Source};
 
@@ -31,6 +32,59 @@ pub enum Origin {
         pending: usize,
         elapsed: Duration,
     },
+}
+
+impl Origin {
+    /// Header lines of a text report.
+    pub fn describe(&self) -> String {
+        match self {
+            Origin::Snapshot { path } => format!("Board    snapshot {}
+", path.display()),
+            Origin::Live {
+                network,
+                wallet_dir,
+                lightwalletd,
+                created,
+                transactions,
+                pending,
+                elapsed,
+            } => format!(
+                "Board    {} live scan, watch-only wallet {} ({})
+         {transactions} mined                  tx, {pending} pending, order from {lightwalletd}, {:.1} s
+",
+                network.name(),
+                wallet_dir.display(),
+                if *created { "created now" } else { "existing" },
+                elapsed.as_secs_f64()
+            ),
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        match self {
+            Origin::Snapshot { path } => {
+                json!({ "source": "snapshot", "path": path.display().to_string() })
+            }
+            Origin::Live {
+                network,
+                wallet_dir,
+                lightwalletd,
+                created,
+                transactions,
+                pending,
+                elapsed,
+            } => json!({
+                "source": "live",
+                "network": network.name(),
+                "wallet_dir": wallet_dir.display().to_string(),
+                "wallet_created": created,
+                "lightwalletd": lightwalletd,
+                "transactions": transactions,
+                "pending": pending,
+                "elapsed_ms": elapsed.as_millis() as u64,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

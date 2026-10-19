@@ -11,6 +11,7 @@ pub mod entry;
 pub mod error;
 pub mod fund;
 pub mod history;
+pub mod index;
 pub mod invoice;
 pub mod memo;
 pub mod nullifier;
@@ -25,6 +26,7 @@ pub use entry::{financier_commitment, settled_tag, BoardEntry, EntryKind, ENTRY_
 pub use error::Error;
 pub use fund::{LiabilityRoot, ReceivableNote};
 pub use history::{BuyerIdentity, HistoryCert};
+pub use index::RateIndex;
 pub use invoice::{sign_invoice, verify_invoice, Invoice};
 pub use memo::MemoItem;
 pub use nullifier::{document_hash, nullifier};

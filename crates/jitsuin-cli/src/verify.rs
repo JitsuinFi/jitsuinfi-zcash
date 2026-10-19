@@ -12,7 +12,7 @@ use jitsuin_core::proof::PROOF_MAGIC;
 use jitsuin_core::{Bundle, ChainStatus, DoubleSignProof, EntryAt, EntryKind};
 use serde_json::{json, Value};
 
-use crate::board::{Board, Origin};
+use crate::board::Board;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -304,30 +304,7 @@ pub fn check_bundle(bundle: &Bundle, board: &Board) -> Vec<Check> {
 pub fn render_text(r: &Report) -> String {
     let mut s = String::new();
     let c = &r.board.collected;
-    match &r.board.origin {
-        Origin::Snapshot { path } => s += &format!("Board    snapshot {}\n", path.display()),
-        Origin::Live {
-            network,
-            wallet_dir,
-            lightwalletd,
-            created,
-            transactions,
-            pending,
-            elapsed,
-        } => {
-            s += &format!(
-                "Board    {} live scan, watch-only wallet {} ({})\n",
-                network.name(),
-                wallet_dir.display(),
-                if *created { "created now" } else { "existing" }
-            );
-            s += &format!(
-                "         {transactions} mined tx, {pending} pending, order from {lightwalletd}, \
-                 {:.1} s\n",
-                elapsed.as_secs_f64()
-            );
-        }
-    }
+    s += &r.board.origin.describe();
     let tagged = c
         .records
         .iter()
@@ -406,33 +383,10 @@ pub fn render_text(r: &Report) -> String {
 /// JSON report for scripts (`--json`).
 pub fn render_json(r: &Report) -> Value {
     let c = &r.board.collected;
-    let board = match &r.board.origin {
-        Origin::Snapshot { path } => {
-            json!({ "source": "snapshot", "path": path.display().to_string() })
-        }
-        Origin::Live {
-            network,
-            wallet_dir,
-            lightwalletd,
-            created,
-            transactions,
-            pending,
-            elapsed,
-        } => json!({
-            "source": "live",
-            "network": network.name(),
-            "wallet_dir": wallet_dir.display().to_string(),
-            "wallet_created": created,
-            "lightwalletd": lightwalletd,
-            "transactions": transactions,
-            "pending": pending,
-            "elapsed_ms": elapsed.as_millis() as u64,
-        }),
-    };
     let pos = |p: Position| json!({ "height": p.height, "tx_index": p.tx_index, "output_index": p.output_index });
     json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "board": board,
+        "board": r.board.origin.to_json(),
         "entries": c.records.iter().map(|x| json!({
             "kind": match x.entry.kind { EntryKind::RegisterWithHistory => "history", _ => "register" },
             "txid": x.txid,
