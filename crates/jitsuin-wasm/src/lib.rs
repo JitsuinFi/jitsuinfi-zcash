@@ -236,3 +236,35 @@ pub fn board_memo_describe(memo_b64: &str) -> Result<String, JsError> {
 
 #[cfg(test)]
 mod tests;
+
+#[wasm_bindgen(js_name = supplierRegisterHistoryEntry)]
+pub fn supplier_register_history_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    cert_b64: &str,
+) -> Result<String, JsError> {
+    js(api::supplier_register_history_entry(
+        supplier_secret_hex,
+        invoice_b64,
+        financier_pk_hex,
+        salt_hex,
+        cert_b64,
+    ))
+}
+
+#[wasm_bindgen(js_name = financierSettle)]
+pub fn financier_settle(
+    financier_secret_hex: &str,
+    invoice_b64: &str,
+    assignment_b64: &str,
+    repayment_memo_b64: &str,
+) -> Result<String, JsError> {
+    js(api::financier_settle(
+        financier_secret_hex,
+        invoice_b64,
+        assignment_b64,
+        repayment_memo_b64,
+    ))
+}

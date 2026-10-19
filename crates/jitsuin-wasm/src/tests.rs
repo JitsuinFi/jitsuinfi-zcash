@@ -343,3 +343,97 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
     )
     .is_err());
 }
+
+/// Invoice `index` of `MASTER`'s buyer, supplier key 0x01, due `due`.
+fn history_invoice(index: u32, due: u32) -> String {
+    let buyer = BuyerIdentity::from_master_secret([0x42; 32]).invoice_key(index);
+    api::invoice_encode(
+        &serde_json::json!({
+            "invoice_id": format!("TES-INV-H{index}"),
+            "supplier_pk": hex(&key(1).verifying_key().to_bytes()),
+            "buyer_pk": hex(&buyer.verifying_key().to_bytes()),
+            "amount_zat": 30_000u64 + u64::from(index),
+            "issue_date": due - 60,
+            "due_date": due,
+            "terms_hash": api::document_hash(b"TES-terms"),
+        })
+        .to_string(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_repaid_history_verifies_and_a_hidden_invoice_is_caught() {
+    let fin_pk = hex(&key(3).verifying_key().to_bytes());
+    let fin_sk = "03".repeat(32);
+    let terms = api::document_hash(b"TES-assignment");
+    let mut certs: Vec<String> = Vec::new();
+    let mut board = Vec::new();
+    // invoice 0 is repaid on its due date, invoice 1 three days late
+    for (i, (due, paid)) in [(20_000u32, 20_000u32), (20_030, 20_033)]
+        .into_iter()
+        .enumerate()
+    {
+        let i = i as u32;
+        let inv = history_invoice(i, due);
+        let prev = certs.last().cloned().unwrap_or_default();
+        let cert = api::buyer_history_cert(MASTER, i, &inv, &fin_pk, &prev).unwrap();
+        let reg = parse(
+            &api::supplier_register_history_entry(
+                &"01".repeat(32),
+                &inv,
+                &fin_pk,
+                &"0a".repeat(32),
+                &cert,
+            )
+            .unwrap(),
+        );
+        let letter = api::assignment_encode(&inv, &fin_pk, "utest1financier", &terms).unwrap();
+        let pay = parse(&api::buyer_repayment(MASTER, i, &inv, &letter, paid).unwrap());
+        let settled = parse(
+            &api::financier_settle(&fin_sk, &inv, &letter, pay["memo"].as_str().unwrap()).unwrap(),
+        );
+        assert_eq!(settled["on_time"], paid <= due);
+        // the settlement belongs to its financier only
+        assert!(api::financier_settle(
+            &"04".repeat(32),
+            &inv,
+            &letter,
+            pay["memo"].as_str().unwrap()
+        )
+        .is_err());
+        for (k, memo) in [
+            reg["memo"].as_str().unwrap(),
+            settled["memo"].as_str().unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            board.push(serde_json::json!({ "txid": format!("{i}{k}").repeat(32), "height": 10 + 2 * i + k as u32,
+                "tx_index": 0, "output_index": 0, "memo": memo }));
+        }
+        certs.push(cert);
+    }
+    let board = serde_json::Value::Array(board).to_string();
+    let id_pk = hex(&BuyerIdentity::from_master_secret([0x42; 32])
+        .identity_key()
+        .verifying_key()
+        .to_bytes());
+    let allow = serde_json::json!([fin_pk]).to_string();
+    let all = serde_json::json!(certs).to_string();
+    let r = parse(&api::verify_history(&all, &id_pk, &allow, &board, 20_100, 7).unwrap());
+    assert_eq!(
+        (
+            r["on_time"].as_u64(),
+            r["late"].as_u64(),
+            r["defaults"].as_u64()
+        ),
+        (Some(1), Some(1), Some(0))
+    );
+    assert_eq!(r["lines"][1]["outcome"], "PaidLate");
+    // leaving out the late invoice, or the first one, is caught
+    let first_only = serde_json::json!([certs[0]]).to_string();
+    assert!(api::verify_history(&first_only, &id_pk, &allow, &board, 20_100, 7).is_err());
+    let second_only = serde_json::json!([certs[1]]).to_string();
+    assert!(api::verify_history(&second_only, &id_pk, &allow, &board, 20_100, 7).is_err());
+}
