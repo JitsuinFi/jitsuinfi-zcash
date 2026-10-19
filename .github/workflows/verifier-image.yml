@@ -1,0 +1,71 @@
+# HNK-09.T2 / SPK-11: build the verifier image on a clean runner (no cache), time it, and check
+# that the sample verification inside the container prints exactly the expected output.
+name: verifier image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - Cargo.lock
+      - crates/jitsuin-cli/**
+      - crates/jitsuin-board/**
+      - crates/jitsuin-core/**
+      - crates/jitsuin-wallet/**
+      - examples/verify/**
+      - .github/workflows/verifier-image.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - Cargo.lock
+      - crates/jitsuin-cli/**
+      - crates/jitsuin-board/**
+      - crates/jitsuin-core/**
+      - crates/jitsuin-wallet/**
+      - examples/verify/**
+      - .github/workflows/verifier-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verifier-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: docker build + sample verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build (cold, like a judge's machine)
+        run: |
+          start=$(date +%s)
+          docker build -t jitsuin:ci .
+          secs=$(( $(date +%s) - start ))
+          echo "docker build: ${secs} s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: sample verification matches examples/verify/expected-output.txt
+        run: |
+          start=$(date +%s)
+          docker run --rm jitsuin:ci verify --board examples/verify/board-sample.json \
+            --proof examples/verify/proof-sample.txt --bundle examples/verify/bundle-sample.txt > out.txt
+          echo "sample verification: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          diff -u examples/verify/expected-output.txt out.txt
+      - name: zcash-devtool is in the image
+        run: docker run --rm --entrypoint zcash-devtool jitsuin:ci --help | head -n 3
+      - name: live scan of the board (runs when the repository variable BOARD_UFVK is set)
+        if: vars.BOARD_UFVK != ''
+        env:
+          BOARD_UFVK: ${{ vars.BOARD_UFVK }}
+          BOARD_BIRTHDAY: ${{ vars.BOARD_BIRTHDAY }}
+        run: |
+          start=$(date +%s)
+          docker run --rm jitsuin:ci verify --ufvk "$BOARD_UFVK" --birthday "$BOARD_BIRTHDAY"
+          echo "live scan: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: image size
+        run: |
+          docker image ls jitsuin:ci --format 'image size: {{.Size}}' | tee -a "$GITHUB_STEP_SUMMARY"

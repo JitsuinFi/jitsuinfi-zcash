@@ -1,0 +1,18 @@
+# Build context for the verifier image: sources and samples only, never wallets or keys.
+target
+pkg
+.git
+.github
+wallet-*
+.hanko-tes
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+*.age
+*.seed
+*.mnemonic
+*.key
+*.pem
+keys
+.env
+.env.*

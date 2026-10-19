@@ -6,6 +6,7 @@ members = [
     "crates/jitsuin-board",
     "crates/jitsuin-flow",
     "crates/jitsuin-wasm",
+    "crates/jitsuin-cli",
 ]
 
 [workspace.package]
