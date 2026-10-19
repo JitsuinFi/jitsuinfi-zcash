@@ -94,6 +94,36 @@ pub fn buyer_history_cert(
     ))
 }
 
+#[wasm_bindgen(js_name = supplierRegisterEntry)]
+pub fn supplier_register_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+) -> Result<String, JsError> {
+    js(api::supplier_register_entry(
+        supplier_secret_hex,
+        invoice_b64,
+        financier_pk_hex,
+        salt_hex,
+    ))
+}
+
+#[wasm_bindgen(js_name = doubleSignProof)]
+pub fn double_sign_proof(
+    invoice_b64: &str,
+    buyer_signature_hex: &str,
+    first_memo_b64: &str,
+    second_memo_b64: &str,
+) -> Result<String, JsError> {
+    js(api::double_sign_proof(
+        invoice_b64,
+        buyer_signature_hex,
+        first_memo_b64,
+        second_memo_b64,
+    ))
+}
+
 #[wasm_bindgen(js_name = financierSealAssignment)]
 pub fn financier_seal_assignment(
     financier_secret_hex: &str,

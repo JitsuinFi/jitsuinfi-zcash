@@ -413,6 +413,54 @@ pub fn assignment_status(
         .to_string())
 }
 
+/// Register entry for the board (memo, base64url), signed with the supplier's key of this invoice,
+/// committing to one financier: `BLAKE2b-256(financier_pk ‖ salt)`. Also returns the commitment.
+pub fn supplier_register_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
+    if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
+        return Err("key is not the supplier key of this invoice".into());
+    }
+    let commitment =
+        jitsuin_core::financier_commitment(&unhex(financier_pk_hex)?, &unhex(salt_hex)?);
+    let e = jitsuin_core::BoardEntry::sign(
+        &key,
+        jitsuin_core::EntryKind::Register,
+        nullifier(&inv).map_err(err)?,
+        commitment,
+        0,
+        0,
+    );
+    Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
+}
+
+/// Double-signature proof (base64url) from two register memos for the same invoice, signed by its
+/// supplier for two different financiers, with the buyer's invoice signature. Neither entry needs
+/// to be on chain: the second one may only have been offered.
+pub fn double_sign_proof(
+    invoice_b64: &str,
+    buyer_signature_hex: &str,
+    first_memo_b64: &str,
+    second_memo_b64: &str,
+) -> ApiResult<String> {
+    let entry = |m: &str| jitsuin_core::BoardEntry::from_memo_bytes(&unb64(m)?).map_err(err);
+    let p = DoubleSignProof {
+        invoice: invoice(invoice_b64)?,
+        buyer_signature: unhex(buyer_signature_hex)?,
+        first: entry(first_memo_b64)?,
+        second: entry(second_memo_b64)?,
+        first_at: None,
+        second_at: None,
+    };
+    p.verify().map_err(err)?;
+    Ok(b64(&p.to_bytes().map_err(err)?))
+}
+
 /// Public key (hex) of a 32-byte secret, for the supplier's per-invoice key made in the browser.
 pub fn public_key(secret_hex: &str) -> ApiResult<String> {
     Ok(hex(&SigningKey::from_bytes(&unhex::<32>(secret_hex)?)

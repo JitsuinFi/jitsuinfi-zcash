@@ -300,3 +300,46 @@ fn the_seal_chain_closes_with_the_financier_and_breaks_on_a_changed_amount() {
     let changed = api::invoice_encode(&j.to_string()).unwrap();
     assert!(api::assignment_status(&changed, &a_b64, &three).is_err());
 }
+
+#[test]
+fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
+    let inv_b64 = invoice_b64();
+    let fin_a = hex(&key(3).verifying_key().to_bytes());
+    let fin_b = hex(&key(4).verifying_key().to_bytes());
+    let a = parse(
+        &api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin_a, &"0a".repeat(32))
+            .unwrap(),
+    );
+    let b = parse(
+        &api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin_b, &"0b".repeat(32))
+            .unwrap(),
+    );
+    // only the invoice's supplier key may register it
+    assert!(
+        api::supplier_register_entry(&"02".repeat(32), &inv_b64, &fin_a, &"0a".repeat(32)).is_err()
+    );
+    // the board reads N and the commitment from each memo
+    let da = parse(&api::board_memo_describe(a["memo"].as_str().unwrap()).unwrap());
+    let db = parse(&api::board_memo_describe(b["memo"].as_str().unwrap()).unwrap());
+    assert_eq!(da["nullifier"], db["nullifier"]);
+    assert_ne!(da["financier_commitment"], db["financier_commitment"]);
+    let sig = api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap();
+    let proof = api::double_sign_proof(
+        &inv_b64,
+        &sig,
+        a["memo"].as_str().unwrap(),
+        b["memo"].as_str().unwrap(),
+    )
+    .unwrap();
+    let r = parse(&api::verify_proof(&proof).unwrap());
+    assert_eq!(r["first_commitment"], a["commitment"]);
+    assert_eq!(r["second_commitment"], b["commitment"]);
+    // the same entry twice proves nothing
+    assert!(api::double_sign_proof(
+        &inv_b64,
+        &sig,
+        a["memo"].as_str().unwrap(),
+        a["memo"].as_str().unwrap()
+    )
+    .is_err());
+}
