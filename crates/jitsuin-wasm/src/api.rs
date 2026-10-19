@@ -365,6 +365,54 @@ pub fn supplier_seal_assignment(
     Ok(b64(&a.seal_next(&key, &[]).map_err(err)?.to_bytes()))
 }
 
+fn seals_of(json_text: &str) -> ApiResult<Vec<Seal>> {
+    let list: Vec<String> = serde_json::from_str(json_text).map_err(err)?;
+    list.iter()
+        .map(|s| Seal::from_bytes(&unb64(s)?).map_err(err))
+        .collect()
+}
+
+/// Financier seal on the assignment letter, the last of the chain, after checking the supplier's
+/// and the buyer's seals (`seals_json`: their seals as a JSON array of base64url). Sign-to-Pay:
+/// the advance goes out only once this seal exists.
+pub fn financier_seal_assignment(
+    financier_secret_hex: &str,
+    invoice_b64: &str,
+    assignment_b64: &str,
+    seals_json: &str,
+) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let a = assignment(assignment_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(financier_secret_hex)?);
+    if key.verifying_key().to_bytes() != a.financier_pk {
+        return Err("key is not the financier key of this letter".into());
+    }
+    let prior = seals_of(seals_json)?;
+    match a.verify(&inv, &prior).map_err(err)? {
+        ChainStatus::Incomplete {
+            next: Role::Financier,
+        } => {}
+        _ => return Err("the letter is not waiting for the financier's seal".into()),
+    }
+    Ok(b64(&a.seal_next(&key, &prior).map_err(err)?.to_bytes()))
+}
+
+/// Where the letter's seal chain stands: "Sealed", "AwaitingSeal:<Role>", or an error when the
+/// letter no longer matches the invoice or a seal does not verify (a changed amount, for one).
+pub fn assignment_status(
+    invoice_b64: &str,
+    assignment_b64: &str,
+    seals_json: &str,
+) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let a = assignment(assignment_b64)?;
+    let st = a.verify(&inv, &seals_of(seals_json)?).map_err(err)?;
+    Ok(chain_status(Some(st))
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
+}
+
 /// Public key (hex) of a 32-byte secret, for the supplier's per-invoice key made in the browser.
 pub fn public_key(secret_hex: &str) -> ApiResult<String> {
     Ok(hex(&SigningKey::from_bytes(&unhex::<32>(secret_hex)?)

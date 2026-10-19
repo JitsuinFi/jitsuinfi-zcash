@@ -263,3 +263,40 @@ fn outsiders_only_see_hashes() {
     assert_eq!(d["nullifier"], hex(&n));
     assert!(api::board_memo_describe(&b64(&[0xFF, 1, 2])).is_err());
 }
+
+#[test]
+fn the_seal_chain_closes_with_the_financier_and_breaks_on_a_changed_amount() {
+    let inv_b64 = invoice_b64();
+    let a_b64 = b64(&letter().to_canonical_bytes().unwrap());
+    let s0 = api::supplier_seal_assignment(&"01".repeat(32), &inv_b64, &a_b64).unwrap();
+    let s1 = api::buyer_seal_assignment(MASTER, 0, &inv_b64, &a_b64, &s0).unwrap();
+    let two = serde_json::json!([s0, s1]).to_string();
+    assert_eq!(
+        api::assignment_status(&inv_b64, &a_b64, &serde_json::json!([s0]).to_string()).unwrap(),
+        "AwaitingSeal:Buyer"
+    );
+    assert_eq!(
+        api::assignment_status(&inv_b64, &a_b64, &two).unwrap(),
+        "AwaitingSeal:Financier"
+    );
+    // the financier's seal needs the financier's key, and the two seals before it
+    assert!(api::financier_seal_assignment(&"02".repeat(32), &inv_b64, &a_b64, &two).is_err());
+    assert!(api::financier_seal_assignment(
+        &"03".repeat(32),
+        &inv_b64,
+        &a_b64,
+        &serde_json::json!([s0]).to_string()
+    )
+    .is_err());
+    let s2 = api::financier_seal_assignment(&"03".repeat(32), &inv_b64, &a_b64, &two).unwrap();
+    let three = serde_json::json!([s0, s1, s2]).to_string();
+    assert_eq!(
+        api::assignment_status(&inv_b64, &a_b64, &three).unwrap(),
+        "Sealed"
+    );
+    // one zat more on the invoice: the letter and its seals no longer match
+    let mut j = parse(&api::invoice_decode(&inv_b64).unwrap());
+    j["amount_zat"] = serde_json::json!(40_001u64);
+    let changed = api::invoice_encode(&j.to_string()).unwrap();
+    assert!(api::assignment_status(&changed, &a_b64, &three).is_err());
+}

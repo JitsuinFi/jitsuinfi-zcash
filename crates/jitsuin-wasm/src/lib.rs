@@ -94,6 +94,34 @@ pub fn buyer_history_cert(
     ))
 }
 
+#[wasm_bindgen(js_name = financierSealAssignment)]
+pub fn financier_seal_assignment(
+    financier_secret_hex: &str,
+    invoice_b64: &str,
+    assignment_b64: &str,
+    seals_json: &str,
+) -> Result<String, JsError> {
+    js(api::financier_seal_assignment(
+        financier_secret_hex,
+        invoice_b64,
+        assignment_b64,
+        seals_json,
+    ))
+}
+
+#[wasm_bindgen(js_name = assignmentStatus)]
+pub fn assignment_status(
+    invoice_b64: &str,
+    assignment_b64: &str,
+    seals_json: &str,
+) -> Result<String, JsError> {
+    js(api::assignment_status(
+        invoice_b64,
+        assignment_b64,
+        seals_json,
+    ))
+}
+
 #[wasm_bindgen(js_name = supplierSealAssignment)]
 pub fn supplier_seal_assignment(
     supplier_secret_hex: &str,
