@@ -174,7 +174,7 @@ pub fn buyer_repayment(
     let uri = zip321_uri(&[Payment {
         address: a.financier_address.clone(),
         amount_zat: a.amount_zat,
-        memo: Some(PaymentMemo::Arbitrary(memo)),
+        memo: Some(PaymentMemo::Arbitrary(memo.clone())),
     }])
     .map_err(err)?;
     let svg = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::M)
@@ -182,7 +182,7 @@ pub fn buyer_repayment(
         .render::<svg::Color<'_>>()
         .min_dimensions(320, 320)
         .build();
-    Ok(json!({ "uri": uri, "qr_svg": svg }).to_string())
+    Ok(json!({ "uri": uri, "qr_svg": svg, "memo": b64(&memo) }).to_string())
 }
 
 /// History certificate for the invoice at `index`, chained after `prev_b64` ("" for index 0).
@@ -579,4 +579,72 @@ pub fn board_memo_describe(memo_b64: &str) -> ApiResult<String> {
         .first()
         .map(|r| r.reason.clone())
         .unwrap_or_else(|| "not a JitsuinFi board memo".into()))
+}
+
+/// Register memo (base64url) for an invoice the buyer listed in its history: the entry carries the
+/// certificate's tag, so a verifier finds it from the certificate alone.
+pub fn supplier_register_history_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    cert_b64: &str,
+) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
+    if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
+        return Err("key is not the supplier key of this invoice".into());
+    }
+    let cert = HistoryCert::from_bytes(&unb64(cert_b64)?).map_err(err)?;
+    let n = nullifier(&inv).map_err(err)?;
+    if cert.nullifier != n {
+        return Err("the certificate belongs to another invoice".into());
+    }
+    let commitment =
+        jitsuin_core::financier_commitment(&unhex(financier_pk_hex)?, &unhex(salt_hex)?);
+    let e = jitsuin_core::BoardEntry::sign_with_history(&key, n, commitment, 0, 0, cert.tag());
+    Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
+}
+
+/// Settled memo (base64url): the financier countersigns the buyer's repayment memo (from
+/// `buyer_repayment`). On time when the buyer's receipt is dated on or before the due date.
+pub fn financier_settle(
+    financier_secret_hex: &str,
+    invoice_b64: &str,
+    assignment_b64: &str,
+    repayment_memo_b64: &str,
+) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let a = assignment(assignment_b64)?;
+    if a.nullifier != nullifier(&inv).map_err(err)? {
+        return Err("the letter belongs to another invoice".into());
+    }
+    let key = SigningKey::from_bytes(&unhex::<32>(financier_secret_hex)?);
+    if key.verifying_key().to_bytes() != a.financier_pk {
+        return Err("key is not the financier of this letter".into());
+    }
+    let mut receipt = None;
+    let mut claim = None;
+    for item in memo::decode(&unb64(repayment_memo_b64)?).map_err(err)? {
+        match item {
+            MemoItem::Receipt(r) => receipt = Some(r),
+            MemoItem::Seal(s) => claim = Some(s),
+            _ => {}
+        }
+    }
+    let (receipt, claim) = receipt.zip(claim).ok_or("the memo is not a repayment")?;
+    receipt.verify(&inv.buyer_pk).map_err(err)?;
+    if receipt.kind != ReceiptKind::Repayment || receipt.nullifier != a.nullifier {
+        return Err("the receipt is not a repayment of this invoice".into());
+    }
+    let on_time = receipt.date <= a.due_date;
+    let flag = if on_time {
+        jitsuin_core::SETTLED_ON_TIME
+    } else {
+        jitsuin_core::SETTLED_LATE
+    };
+    let doc = SettlementDoc::for_assignment(&a);
+    let e = jitsuin_core::SettledEntry::countersign(&doc, &claim, &inv.buyer_pk, &key, flag)
+        .map_err(err)?;
+    Ok(json!({ "memo": b64(&e.to_memo_bytes()), "on_time": on_time }).to_string())
 }
