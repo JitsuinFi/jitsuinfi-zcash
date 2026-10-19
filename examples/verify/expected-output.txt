@@ -1,0 +1,26 @@
+Board    snapshot examples/verify/board-sample.json
+Entries  4 register (0 with history tag), 1 settled, 1 rejected memo(s)
+
+  height      tx  out  kind      N / tag       commitment    d/t  txid
+  4600010      1    0  register  9ac770ee5767  cf3dbdcc5d8a  3/2  a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+  4600025      0    1  register  9ac770ee5767  356e1025b579  3/2  a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2
+  4600028      0    0  register  a2533eb9588a  7fc0aadab4e8  3/2  b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0
+  4600030      2    0  register  a2533eb9588a  40fe76614b88  3/2  b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1
+  4600090      0    0  settled   682d740a7d5f  -             -    b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
+  rejected  c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1:2  unknown registry entry kind 0x09
+
+Proof  examples/verify/proof-sample.txt
+  PASS  signatures: buyer signed invoice TES-INV-0901; supplier signed N 9ac770ee5767 for 2 different financiers (cf3dbdcc5d8a and 356e1025b579)
+  PASS  first entry: on the board at 4600010/1/0 (txid a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1)
+  PASS  second entry: on the board at 4600025/0/1 (txid a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2)
+  PASS  order: the first entry came before the second
+  => DOUBLE FINANCING PROVEN
+
+Bundle  examples/verify/bundle-sample.txt
+  PASS  signatures: buyer signed invoice TES-INV-0902 (N a2533eb9588a); assignment letter sealed by supplier, buyer, financier
+  PASS  registration: registered once: first valid entry at 4600030/2/0 (txid b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1)
+  INFO  ignored: 1 entry for N ignored: the supplier signature does not verify
+  PASS  settlement: settled entry signed by buyer and financier at 4600090/0/0 (txid b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2), on time
+  => DEAL VERIFIED
+
+Result   PASS (7 check(s), 0 failed)

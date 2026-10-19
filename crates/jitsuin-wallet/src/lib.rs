@@ -142,6 +142,23 @@ impl Devtool {
         Ok(stdout)
     }
 
+    /// Creates a view-only wallet from a unified full viewing key (`init-fvk`), for example the
+    /// board's published UFVK (SPK-05, D-11). The account cannot spend. `birthday` is the first
+    /// block to scan; devtool otherwise starts near the chain tip and misses older outputs.
+    pub fn init_fvk(&self, name: &str, ufvk: &str, birthday: u32) -> Result<(), Error> {
+        let birthday = birthday.to_string();
+        self.run(&[
+            "init-fvk",
+            "--name",
+            name,
+            "--fvk",
+            ufvk,
+            "--birthday",
+            &birthday,
+        ])
+        .map(|_| ())
+    }
+
     pub fn sync(&self) -> Result<(), Error> {
         self.run_retrying(&["sync"]).map(|_| ())
     }

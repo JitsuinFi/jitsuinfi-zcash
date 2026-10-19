@@ -713,6 +713,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "jitsuin-cli"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "jitsuin-board",
+ "jitsuin-core",
+ "jitsuin-wallet",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jitsuin-core"
 version = "0.1.0"
 dependencies = [

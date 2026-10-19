@@ -1,0 +1,22 @@
+[package]
+name = "jitsuin-cli"
+version = "0.1.0"
+description = "JitsuinFi command line: `jitsuin verify` scans the registry board with its viewing key and checks double-signature proofs and verification bundles"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "jitsuin"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+jitsuin-board = { path = "../jitsuin-board" }
+jitsuin-core = { path = "../jitsuin-core" }
+jitsuin-wallet = { path = "../jitsuin-wallet" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
