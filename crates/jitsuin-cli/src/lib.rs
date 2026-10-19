@@ -1,13 +1,14 @@
 //! `jitsuin` command line (HNK-09). `jitsuin verify` reads the registry board, either live with
 //! the board's published viewing key (a watch-only `zcash-devtool` wallet, no spending key, no
 //! ZEC) or from a snapshot file, and checks double-signature proofs and verification bundles on
-//! it.
+//! it. `jitsuin index` prints the public rate index of the same board (HNK-08).
 
 pub mod args;
 pub mod board;
+pub mod index;
 pub mod verify;
 
-use args::{Command, VerifyArgs, USAGE};
+use args::{Command, IndexArgs, VerifyArgs, USAGE};
 
 /// Exit status: every check holds.
 pub const EXIT_OK: i32 = 0;
@@ -26,6 +27,17 @@ pub fn main_with(args: &[String], devtool_env: Option<&str>) -> (i32, String, St
             format!("jitsuin {}\n", env!("CARGO_PKG_VERSION")),
             String::new(),
         ),
+        Ok(Command::Index(i)) => match index(&i) {
+            Err(e) => (
+                EXIT_ERROR,
+                String::new(),
+                format!(
+                    "error: {e}
+"
+                ),
+            ),
+            Ok(out) => (EXIT_OK, out, String::new()),
+        },
         Ok(Command::Verify(v)) => match verify(&v) {
             Err(e) => (EXIT_ERROR, String::new(), format!("error: {e}\n")),
             Ok((passed, out)) => (
@@ -49,4 +61,17 @@ fn verify(v: &VerifyArgs) -> Result<(bool, String), String> {
         verify::render_text(&report)
     };
     Ok((report.passed(), out))
+}
+
+fn index(a: &IndexArgs) -> Result<String, String> {
+    let board = board::load(&a.source)?;
+    let i = index::run(&board, a.k);
+    Ok(if a.json {
+        let mut s = serde_json::to_string_pretty(&index::render_json(&board, &i))
+            .expect("index serializes");
+        s.push('\n');
+        s
+    } else {
+        index::render_text(&board, &i)
+    })
 }

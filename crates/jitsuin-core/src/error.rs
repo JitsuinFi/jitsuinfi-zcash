@@ -55,6 +55,8 @@ pub enum Error {
     TrailingBytes,
     /// Memo padding after the entry is not all zero.
     NonZeroPadding,
+    /// Discount or tenor class is not defined, or only one of the two is disclosed (HNK-08).
+    InvalidBucket,
 }
 
 impl fmt::Display for Error {
@@ -86,6 +88,7 @@ impl fmt::Display for Error {
             Error::Truncated => write!(f, "input truncated"),
             Error::TrailingBytes => write!(f, "unexpected trailing bytes"),
             Error::NonZeroPadding => write!(f, "memo padding is not zero"),
+            Error::InvalidBucket => write!(f, "discount/tenor class is not defined"),
         }
     }
 }

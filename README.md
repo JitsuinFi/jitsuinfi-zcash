@@ -98,4 +98,27 @@ jitsuin verify --board examples/verify/board-sample.json --proof examples/verify
 
 `jitsuin verify --help` lists every option (`--wallet-dir`, `--devtool` or `$JITSUIN_DEVTOOL`, `--lightwalletd`, `--save-board` to write a snapshot after a live scan, `--json`).
 
+## Public rate index (`jitsuin index`)
+
+"Price public, participants private": each register entry carries a discount class and a tenor class, never an amount or a party. `jitsuin index` recomputes the index from the same board sources as `verify` (`--ufvk` or `--board`). Each invoice counts once, with its first entry in board order. A tenor class, and a discount class inside it, is shown only when it has at least **k = 5** invoices (`--k` can raise it, not lower it).
+
+```bash
+jitsuin index --board examples/index/board-sample.json
+```
+
+Expected output: [`examples/index/expected-output.txt`](examples/index/expected-output.txt). `--json` adds the class table for the web page.
+
+| code | discount (face - advance) / face | tenor (advance to due date) |
+|------|----------------------------------|-----------------------------|
+| 0    | not disclosed                    | not disclosed               |
+| 1    | < 1%                             | <= 30 days                  |
+| 2    | 1-2%                             | 31-60 days                  |
+| 3    | 2-3%                             | 61-90 days                  |
+| 4    | 3-5%                             | 91-180 days                 |
+| 5    | 5-8%                             | 181-365 days                |
+| 6    | 8-12%                            |                             |
+| 7    | >= 12%                           |                             |
+
+`jitsuin_core::index::classes_for(face, advance, advance_day, due_day)` gives the two codes the supplier signs into the entry. Both are disclosed or neither (`0/0`); other values are counted as invalid and left out.
+
 Status: in development for ZECATHON 2026. Development runs on Zcash testnet (NU7).

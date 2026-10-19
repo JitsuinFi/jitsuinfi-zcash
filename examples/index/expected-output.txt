@@ -1,0 +1,10 @@
+Board    snapshot examples/index/board-sample.json
+Index    public rate index, k = 5: a class is shown only with at least 5 invoices
+         18 register entries, 17 invoices (each N once, first entry), 1 not disclosed, 1 invalid
+
+  tenor          invoices  median discount  discount classes (invoices)
+  <= 30 days     -         -                fewer than 5 invoices
+  31-60 days     9         2-3%             2-3%: 6, other: 3
+  61-90 days     5         3-5%             3-5%: 5
+  91-180 days    -         -                fewer than 5 invoices
+  181-365 days   -         -                fewer than 5 invoices

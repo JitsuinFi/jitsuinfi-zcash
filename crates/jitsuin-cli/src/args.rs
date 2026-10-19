@@ -3,12 +3,17 @@
 use std::path::PathBuf;
 
 use jitsuin_board::lwd;
+use jitsuin_core::index::K;
 
 pub const USAGE: &str = "\
 jitsuin: JitsuinFi registry board verifier (no spending key, no ZEC needed)
 
 USAGE:
     jitsuin verify (--ufvk <UFVK> | --board <FILE>) [CHECKS] [OPTIONS]
+    jitsuin index  (--ufvk <UFVK> | --board <FILE>) [--k <K>] [OPTIONS]
+
+    verify   List the board's entries and check proofs and bundles against it.
+    index    Public rate index: discount by tenor class, from the board (HNK-08).
 
 BOARD SOURCE (exactly one):
     --ufvk <UFVK>           Board's unified full viewing key (uview1... or uviewtest1...).
@@ -16,9 +21,13 @@ BOARD SOURCE (exactly one):
     --board <FILE>          Board snapshot, JSON [{txid, height, tx_index, output_index, memo}]
                             (memo = full 512-byte memo, base64url). Offline.
 
-CHECKS (repeatable):
+CHECKS (verify, repeatable):
     --proof <FILE>          Double-signature proof (JTSP), binary or base64url text.
     --bundle <FILE>         Verification bundle (JTSB), binary or base64url text.
+
+INDEX:
+    --k <K>                 Smallest number of invoices a class needs to be shown
+                            [default and minimum: 5]
 
 LIVE SCAN OPTIONS (with --ufvk):
     --birthday <HEIGHT>     First block of the board. Required when the wallet is created.
@@ -93,8 +102,16 @@ pub struct VerifyArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexArgs {
+    pub source: Source,
+    pub k: usize,
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Verify(Box<VerifyArgs>),
+    Index(Box<IndexArgs>),
     Help,
     Version,
 }
@@ -102,12 +119,12 @@ pub enum Command {
 /// Parses the arguments after the program name. `devtool_env` is `$JITSUIN_DEVTOOL`.
 pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, String> {
     let mut it = args.iter();
-    match it.next().map(String::as_str) {
+    let command = match it.next().map(String::as_str) {
         None | Some("help" | "-h" | "--help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
-        Some("verify") => {}
+        Some(c @ ("verify" | "index")) => c,
         Some(other) => return Err(format!("unknown command `{other}` (try `jitsuin --help`)")),
-    }
+    };
 
     let mut ufvk = None;
     let mut board = None;
@@ -118,6 +135,7 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
     let mut save_board = None;
     let mut proofs = Vec::new();
     let mut bundles = Vec::new();
+    let mut k = None;
     let mut json = false;
 
     while let Some(arg) = it.next() {
@@ -155,8 +173,19 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
             "--devtool" => set(&mut devtool, name, PathBuf::from(value()?))?,
             "--lightwalletd" => set(&mut lightwalletd, name, value()?)?,
             "--save-board" => set(&mut save_board, name, PathBuf::from(value()?))?,
+            "--proof" | "--bundle" if command != "verify" => {
+                return Err(format!("{name} only applies to `jitsuin verify`"))
+            }
             "--proof" => proofs.push(PathBuf::from(value()?)),
             "--bundle" => bundles.push(PathBuf::from(value()?)),
+            "--k" if command != "index" => return Err("--k only applies to `jitsuin index`".into()),
+            "--k" => {
+                let v = value()?;
+                let n = v.parse::<usize>().ok().filter(|n| *n >= K).ok_or_else(|| {
+                    format!("--k must be a whole number of at least {K}, got `{v}`")
+                })?;
+                set(&mut k, name, n)?
+            }
             _ => return Err(format!("unknown option `{arg}` (try `jitsuin --help`)")),
         }
     }
@@ -197,12 +226,19 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
             })
         }
     };
-    Ok(Command::Verify(Box::new(VerifyArgs {
-        source,
-        proofs,
-        bundles,
-        json,
-    })))
+    Ok(match command {
+        "index" => Command::Index(Box::new(IndexArgs {
+            source,
+            k: k.unwrap_or(K),
+            json,
+        })),
+        _ => Command::Verify(Box::new(VerifyArgs {
+            source,
+            proofs,
+            bundles,
+            json,
+        })),
+    })
 }
 
 fn set<T>(slot: &mut Option<T>, name: &str, value: T) -> Result<(), String> {
@@ -313,6 +349,30 @@ mod tests {
         };
         let Source::Live(l) = v.source else { panic!() };
         assert_eq!(l.devtool, PathBuf::from("./dt"));
+    }
+
+    #[test]
+    fn index_takes_the_same_board_options_and_k() {
+        let Ok(Command::Index(i)) = p(&["index", "--board", "b.json", "--json"]) else {
+            panic!()
+        };
+        assert_eq!(
+            (i.source, i.k, i.json),
+            (Source::Snapshot("b.json".into()), K, true)
+        );
+        let Ok(Command::Index(i)) = p(&["index", "--ufvk", TEST_UFVK, "--k=8"]) else {
+            panic!()
+        };
+        assert_eq!(i.k, 8);
+        assert!(matches!(i.source, Source::Live(_)));
+        let err = |a: &[&str]| p(a).unwrap_err();
+        assert!(err(&["index", "--board", "b", "--k", "4"]).contains("at least 5"));
+        assert!(err(&["index", "--board", "b", "--k", "x"]).contains("at least 5"));
+        assert!(err(&["index", "--board", "b", "--proof", "p"])
+            .contains("only applies to `jitsuin verify`"));
+        assert!(err(&["verify", "--board", "b", "--k", "5"])
+            .contains("only applies to `jitsuin index`"));
+        assert!(err(&["index"]).contains("give the board"));
     }
 
     #[test]
