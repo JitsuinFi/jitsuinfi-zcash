@@ -450,3 +450,37 @@ pub fn supplier_register_tagged_entry_bytes(
         )
     }))
 }
+
+// Supplier master and local storage (HNK-24.T1, T3). The master is a `Uint8Array` that is all
+// zeros after the call.
+
+/// Public key (hex) of the supplier's per-invoice key for `invoice_id` and the buyer's
+/// `invoice_pk(k)`.
+#[wasm_bindgen(js_name = supplierInvoicePublicKeyBytes)]
+pub fn supplier_invoice_public_key_bytes(
+    master: &mut [u8],
+    invoice_id: &str,
+    buyer_pk_hex: &str,
+) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| {
+        api::supplier_invoice_public_key(m, invoice_id, buyer_pk_hex)
+    }))
+}
+
+/// The per-invoice secret as 32 bytes, to hand to a supplier `*Bytes` function (which wipes it).
+#[wasm_bindgen(js_name = supplierInvoiceSecretBytes)]
+pub fn supplier_invoice_secret_bytes(
+    master: &mut [u8],
+    invoice_id: &str,
+    buyer_pk_hex: &str,
+) -> Result<Vec<u8>, JsError> {
+    js(api::with_secret(master, |m| {
+        api::supplier_invoice_secret(m, invoice_id, buyer_pk_hex)
+    }))
+}
+
+/// 64 bytes: AES-256-GCM key, then HMAC-SHA-256 index key, for the encrypted local deal store.
+#[wasm_bindgen(js_name = storageKeysBytes)]
+pub fn storage_keys_bytes(master: &mut [u8]) -> Result<Vec<u8>, JsError> {
+    js(api::with_secret(master, api::storage_keys))
+}

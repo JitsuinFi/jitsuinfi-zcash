@@ -625,3 +625,32 @@ fn byte_secrets_are_zeroed_after_use() {
     assert!(r.is_err()); // 0x02 is not the invoice's supplier key
     assert_eq!(supplier, [0u8; 32]);
 }
+
+#[test]
+fn supplier_master_keys_and_storage_keys() {
+    let master = "11".repeat(32);
+    let buyer = "22".repeat(32);
+    let secret = api::supplier_invoice_secret(&master, "TES-INV-0001", &buyer).unwrap();
+    // same vector as jitsuin-core keys.rs (cross-checked with Python hashlib)
+    assert_eq!(
+        hex(&secret),
+        "bb1354a579aa2d4b4335ff9e5cc9f841692839b1903e52d279ef282730f91051"
+    );
+    let pk = api::supplier_invoice_public_key(&master, "TES-INV-0001", &buyer).unwrap();
+    assert_eq!(api::public_key(&hex(&secret)).unwrap(), pk);
+    // another buyer key, another supplier key
+    let other =
+        api::supplier_invoice_public_key(&master, "TES-INV-0001", &"23".repeat(32)).unwrap();
+    assert_ne!(other, pk);
+    let s = api::storage_keys(&master).unwrap();
+    assert_eq!(s.len(), 64);
+    assert_eq!(
+        hex(&s[..32]),
+        "1d2dff152b74df11c200d74ec263ab5f7e03ad2dc508a9024f0bee2eeb095f2f"
+    );
+    // the byte path wipes the master
+    let mut m = [0x11u8; 32];
+    let viaby = api::with_secret(&mut m, api::storage_keys).unwrap();
+    assert_eq!(viaby, s);
+    assert_eq!(m, [0u8; 32]);
+}

@@ -547,6 +547,44 @@ pub fn double_sign_proof(
     Ok(b64(&p.to_bytes().map_err(err)?))
 }
 
+fn supplier_key(master_hex: &str, invoice_id: &str, buyer_pk_hex: &str) -> ApiResult<SigningKey> {
+    jitsuin_core::SupplierMaster::from_master_secret(unhex::<32>(master_hex)?)
+        .invoice_key(invoice_id, &unhex::<32>(buyer_pk_hex)?)
+        .ok_or_else(|| "invoice_id is too long".to_string())
+}
+
+/// Public key (hex) of the supplier's per-invoice key from the supplier master (P-03,
+/// HNK-24.T1), for `invoice_id` and the buyer's `invoice_pk(k)`.
+pub fn supplier_invoice_public_key(
+    master_hex: &str,
+    invoice_id: &str,
+    buyer_pk_hex: &str,
+) -> ApiResult<String> {
+    Ok(hex(&supplier_key(master_hex, invoice_id, buyer_pk_hex)?
+        .verifying_key()
+        .to_bytes()))
+}
+
+/// The per-invoice secret as 32 bytes, for a supplier `*Bytes` function (which wipes it).
+pub fn supplier_invoice_secret(
+    master_hex: &str,
+    invoice_id: &str,
+    buyer_pk_hex: &str,
+) -> ApiResult<Vec<u8>> {
+    Ok(supplier_key(master_hex, invoice_id, buyer_pk_hex)?
+        .to_bytes()
+        .to_vec())
+}
+
+/// Local storage keys (HNK-24.T3) from a role master: 64 bytes, AES-256-GCM key then HMAC key.
+pub fn storage_keys(master_hex: &str) -> ApiResult<Vec<u8>> {
+    let k = jitsuin_core::storage_keys(&unhex::<32>(master_hex)?);
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(&k.encryption);
+    out.extend_from_slice(&k.index);
+    Ok(out)
+}
+
 /// Public key (hex) of a 32-byte secret, for the supplier's per-invoice key made in the browser.
 pub fn public_key(secret_hex: &str) -> ApiResult<String> {
     Ok(hex(&SigningKey::from_bytes(&unhex::<32>(secret_hex)?)
