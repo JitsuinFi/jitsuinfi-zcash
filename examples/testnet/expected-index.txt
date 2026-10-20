@@ -1,0 +1,10 @@
+Board    snapshot examples/testnet/board-snapshot.json
+Index    public rate index, k = 5: a class is shown only with at least 5 invoices
+         9 register entries, 6 invoices (each N once, first entry), 0 not disclosed, 0 invalid
+
+  tenor          invoices  median discount  discount classes (invoices)
+  <= 30 days     -         -                fewer than 5 invoices
+  31-60 days     -         -                fewer than 5 invoices
+  61-90 days     -         -                fewer than 5 invoices
+  91-180 days    -         -                fewer than 5 invoices
+  181-365 days   -         -                fewer than 5 invoices

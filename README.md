@@ -50,9 +50,29 @@ What it shows: for test invoice `TES-INV-0003-1792179703`, signed by the buyer, 
 docker run --rm -v jitsuin-board:/work/wallet-board-testnet jitsuin index --ufvk "$(cat examples/testnet/board-ufvk.txt)" --birthday 4508703
 ```
 
-The testnet board holds 6 invoices, so every tenor class shows `fewer than 5 invoices`: a class is published only from k = 5 invoices, which keeps single deals from being read off the index.
+On 2026-10-20 it ends with (a later scan may count entries posted since):
 
-**3. Offline, without the network:** `jitsuin verify --board examples/testnet/board-snapshot.json --proof examples/testnet/proof-tes-inv-0003.txt` prints [`examples/testnet/expected-output.txt`](examples/testnet/expected-output.txt). Add `--save-board mine.json` to the live scan in step 1 to write your own snapshot; it holds the same entries, plus any posted after the capture.
+```
+         9 register entries, 6 invoices (each N once, first entry), 0 not disclosed, 0 invalid
+
+  tenor          invoices  median discount  discount classes (invoices)
+  <= 30 days     -         -                fewer than 5 invoices
+  31-60 days     -         -                fewer than 5 invoices
+  61-90 days     -         -                fewer than 5 invoices
+  91-180 days    -         -                fewer than 5 invoices
+  181-365 days   -         -                fewer than 5 invoices
+```
+
+The testnet board then held 6 invoices, so every tenor class shows `fewer than 5 invoices`: a class is published only from k = 5 invoices, which keeps single deals from being read off the index.
+
+**3. Offline, without the network.** The image holds the snapshot, so no volume is needed:
+
+```bash
+docker run --rm jitsuin verify --board examples/testnet/board-snapshot.json --proof examples/testnet/proof-tes-inv-0003.txt
+docker run --rm jitsuin index --board examples/testnet/board-snapshot.json
+```
+
+They print exactly [`examples/testnet/expected-output.txt`](examples/testnet/expected-output.txt) and [`examples/testnet/expected-index.txt`](examples/testnet/expected-index.txt); `cargo test` in CI checks both files byte for byte. Add `--save-board mine.json` to the live scan in step 1 to write your own snapshot; it holds the same entries, plus any posted after the capture.
 
 **4. In the browser:** open the Verify page at <https://jitsuinfi.vercel.app/app.html#/verify>, paste the proof text, choose the board snapshot (or your own from step 3) as board data and press Verify. The page runs the same checks compiled to WebAssembly, in the page, and gives the same verdict.
 
