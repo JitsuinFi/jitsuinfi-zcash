@@ -958,3 +958,29 @@ pub fn mailbox_seal(
     wipe(&mut e);
     r
 }
+
+/// `mailbox_id` (hex) of a recipient's `mailbox_pk` (hex), to address a sealed message.
+pub fn mailbox_id_of(mailbox_pk_hex: &str) -> ApiResult<String> {
+    Ok(hex(&jitsuin_core::mailbox::mailbox_id(&unhex::<32>(
+        mailbox_pk_hex,
+    )?)))
+}
+
+/// Domain tag every relay message signature starts with (jitsuinfi-frontend relay-message.ts).
+const MESSAGE_SIG_DOMAIN: &[u8] = b"JitsuinMsgSig_v1\n";
+
+/// Signs the signing bytes of a relay message header (HNK-23.T7) with a party key, here the
+/// supplier's per-invoice key, without the key leaving wasm. Only bytes that start with the
+/// message domain tag are signed, so the key cannot be made to sign anything else (an invoice, a
+/// seal or a board entry). Returns the public key and the signature (hex).
+pub fn message_sign(secret_hex: &str, signing_bytes: &[u8]) -> ApiResult<String> {
+    if !signing_bytes.starts_with(MESSAGE_SIG_DOMAIN) {
+        return Err("only relay message headers are signed here".into());
+    }
+    let key = SigningKey::from_bytes(&unhex::<32>(secret_hex)?);
+    let sig = ed25519_dalek::Signer::sign(&key, signing_bytes);
+    Ok(
+        json!({ "signer": hex(&key.verifying_key().to_bytes()), "sig": hex(&sig.to_bytes()) })
+            .to_string(),
+    )
+}

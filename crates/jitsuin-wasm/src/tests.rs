@@ -846,3 +846,26 @@ fn mailbox_keys_proof_and_sealed_messages_through_the_api() {
     assert!(api::mailbox_seal(k["mailbox_pk"].as_str().unwrap(), &mut short, b"x").is_err());
     assert_eq!(short, [0; 16]);
 }
+
+#[test]
+fn message_signatures_cover_only_relay_headers() {
+    let secret = hex(&[0x42; 32]);
+    let bytes = b"JitsuinMsgSig_v1\n{\"type\":\"invoice.sign_request\"}";
+    let r: Value = serde_json::from_str(&api::message_sign(&secret, bytes).unwrap()).unwrap();
+    let pk = SigningKey::from_bytes(&[0x42; 32]).verifying_key();
+    assert_eq!(r["signer"], hex(&pk.to_bytes()));
+    let sig: [u8; 64] = (0..64)
+        .map(|i| u8::from_str_radix(&r["sig"].as_str().unwrap()[i * 2..i * 2 + 2], 16).unwrap())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    pk.verify_strict(bytes, &ed25519_dalek::Signature::from_bytes(&sig))
+        .unwrap();
+    // an invoice, a seal or any other bytes are refused
+    assert!(api::message_sign(&secret, b"JTSI\x01...").is_err());
+    assert_eq!(
+        api::mailbox_id_of("721e61a2e3a16f2e7806c392b1367c8edb7c11c0132d2b5d3164290d60fce400")
+            .unwrap(),
+        "171e3bf4c1a8af89725083cc6ceac9bb9400ebcf9caac626f1b6779e667559c2"
+    );
+}

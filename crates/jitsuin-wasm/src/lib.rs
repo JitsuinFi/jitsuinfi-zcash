@@ -541,3 +541,17 @@ pub fn mailbox_seal(
 ) -> Result<Vec<u8>, JsError> {
     js(api::mailbox_seal(recipient_pk_hex, eph_secret, message))
 }
+
+/// `mailbox_id` of a recipient's `mailbox_pk`.
+#[wasm_bindgen(js_name = mailboxId)]
+pub fn mailbox_id(mailbox_pk_hex: &str) -> Result<String, JsError> {
+    js(api::mailbox_id_of(mailbox_pk_hex))
+}
+
+/// Signs a relay message header's signing bytes with a party key (wiped); refuses any other bytes.
+#[wasm_bindgen(js_name = messageSignBytes)]
+pub fn message_sign_bytes(secret: &mut [u8], signing_bytes: &[u8]) -> Result<String, JsError> {
+    js(api::with_secret(secret, |s| {
+        api::message_sign(s, signing_bytes)
+    }))
+}
