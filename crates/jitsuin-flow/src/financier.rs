@@ -191,8 +191,12 @@ impl Flow {
     /// Applies one event. On error the state is unchanged.
     pub fn apply(&mut self, event: Event) -> Result<&State, Error> {
         let next = match (&self.state, event) {
+            // `Register` accepts a board check too (K-4): right before posting, a conflict that
+            // appeared since the first check stops the deal, and an entry of ours that is
+            // already on chain (an earlier attempt) is followed instead of posted again.
             (
                 State::Check
+                | State::Register { .. }
                 | State::AwaitConfirmation { .. }
                 | State::AwaitAssignment { .. }
                 | State::Pay { .. },
@@ -312,6 +316,30 @@ pub fn confirmations(tip_height: u32, height: u32) -> u32 {
     }
 }
 
+/// Txid of a register entry for `nullifier` and `financier_commitment` that this wallet already
+/// sent, mined or not (K-4). Lets `register` after a crash record the earlier post instead of
+/// posting a second entry (two tagged entries for one invoice read as equivocation, Spec #2).
+pub fn sent_entry(
+    txs: &[WalletTx],
+    nullifier: &[u8; 32],
+    financier_commitment: &[u8; 32],
+) -> Option<String> {
+    txs.iter()
+        .find(|tx| {
+            tx.outputs.iter().filter(|o| !o.received).any(|o| {
+                let Memo::Arbitrary(bytes) = &o.memo else {
+                    return false;
+                };
+                BoardEntry::from_memo_bytes(bytes).is_ok_and(|e| {
+                    e.kind.is_register()
+                        && &e.nullifier == nullifier
+                        && &e.financier_commitment == financier_commitment
+                })
+            })
+        })
+        .map(|tx| tx.txid.clone())
+}
+
 /// Txid of an advance receipt for `nullifier`, signed by `financier_pk`, that this wallet already
 /// sent. Lets a retry after a crash record the earlier payment instead of paying twice.
 pub fn sent_advance(
@@ -371,13 +399,25 @@ impl Financier {
         flow.apply(Event::BoardChecked { lookup, tip_height })
     }
 
-    /// Posts the supplier-signed entry to the board (state `Register`).
+    /// Posts the supplier-signed entry to the board (state `Register`). Checks the board once more
+    /// first (a new conflict stops the deal; our own entry already on chain is followed), and
+    /// records an entry this wallet already sent instead of posting it again (K-4).
     pub fn register<'f>(&self, flow: &'f mut Flow) -> Result<&'f State, Error> {
-        let State::Register { entry } = flow.state() else {
+        if !matches!(flow.state(), State::Register { .. }) {
             return Err(unexpected(flow, "register"));
+        }
+        let State::Register { entry } = self.check(flow)?.clone() else {
+            return Ok(flow.state());
         };
-        let memo = entry.to_memo_bytes()[..entry.encoded_len()].to_vec();
         self.wallet.sync()?;
+        if let Some(txid) = sent_entry(
+            &self.wallet.list_tx()?,
+            flow.nullifier(),
+            &flow.deal().financier_commitment,
+        ) {
+            return flow.apply(Event::EntryPosted { txid });
+        }
+        let memo = entry.to_memo_bytes()[..entry.encoded_len()].to_vec();
         let txid = self.wallet.pay(&[Payment {
             address: self.board_address.clone(),
             amount_zat: ENTRY_POST_ZAT,
@@ -830,6 +870,70 @@ mod tests {
         assert_eq!(confirmations(100, 100), 1);
         assert_eq!(confirmations(105, 100), 6);
         assert_eq!(confirmations(99, 100), 0);
+    }
+
+    #[test]
+    fn a_board_check_right_before_posting_stops_or_follows() {
+        let to_register = || {
+            let mut flow = Flow::new(deal(2)).unwrap();
+            flow.apply(board(&[], 1)).unwrap();
+            flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+            assert!(matches!(flow.state(), State::Register { .. }));
+            flow
+        };
+        // nothing new on the board: still ready to post
+        let mut flow = to_register();
+        flow.apply(board(&[], 2)).unwrap();
+        assert!(matches!(flow.state(), State::Register { .. }));
+        // another financier registered meanwhile: stop, nothing is posted
+        let mut flow = to_register();
+        let theirs = record("t", 2, entry([0xEE; 32]));
+        flow.apply(board(std::slice::from_ref(&theirs), 2)).unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::Stopped(Stop::AlreadyFinanced { .. })
+        ));
+        // our entry from an earlier attempt is already mined: follow it, do not post again
+        let mut flow = to_register();
+        let mine = record("e0", 2, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&mine), 2)).unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::AwaitConfirmation {
+                entry_txid: "e0".into()
+            }
+        );
+    }
+
+    #[test]
+    fn finds_an_entry_already_sent() {
+        let out = |received, memo: Vec<u8>| TxOutput {
+            index: 0,
+            pool: "Ironwood".into(),
+            value_zat: ENTRY_POST_ZAT,
+            is_change: false,
+            received,
+            memo: Memo::Arbitrary(memo),
+        };
+        let tx = |txid: &str, o| WalletTx {
+            txid: txid.into(),
+            mined_height: None,
+            fee_zat: None,
+            outputs: vec![o],
+        };
+        let mine = entry(ours()).to_memo_bytes().to_vec();
+        let other_n = BoardEntry::sign(&supplier(), EntryKind::Register, [8; 32], ours(), 2, 3)
+            .to_memo_bytes()
+            .to_vec();
+        let other_commitment = entry([0xEE; 32]).to_memo_bytes().to_vec();
+        let txs = vec![
+            tx("received", out(true, mine.clone())),
+            tx("other-n", out(false, other_n)),
+            tx("other-commitment", out(false, other_commitment)),
+            tx("pending", out(false, mine)),
+        ];
+        assert_eq!(sent_entry(&txs, &n(), &ours()).as_deref(), Some("pending"));
+        assert_eq!(sent_entry(&txs[..3], &n(), &ours()), None);
     }
 
     #[test]
