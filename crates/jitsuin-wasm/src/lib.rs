@@ -29,6 +29,12 @@ pub fn document_hash(file: &[u8]) -> String {
     api::document_hash(file)
 }
 
+/// Fields of an assignment letter; pass the invoice (or "") to check that the letter is for it.
+#[wasm_bindgen(js_name = assignmentDecode)]
+pub fn assignment_decode(assignment_b64: &str, invoice_b64: &str) -> Result<String, JsError> {
+    js(api::assignment_decode(assignment_b64, invoice_b64))
+}
+
 #[wasm_bindgen(js_name = financierCommitment)]
 pub fn financier_commitment(
     financier_secret_hex: &str,

@@ -509,6 +509,33 @@ pub fn invoice_decode(invoice_b64: &str) -> ApiResult<String> {
     .to_string())
 }
 
+/// Fields of an assignment letter (P-13, HNK-27.T3), so the supplier and the buyer read what they
+/// seal: N, amount, due date, financier key, pay address and the hash of the letter PDF. With an
+/// invoice, `matches_invoice` says whether N, amount and due date are the invoice's.
+pub fn assignment_decode(assignment_b64: &str, invoice_b64: &str) -> ApiResult<String> {
+    let a = assignment(assignment_b64)?;
+    let matches = if invoice_b64.trim().is_empty() {
+        Value::Null
+    } else {
+        let inv = invoice(invoice_b64)?;
+        Value::Bool(
+            a.nullifier == nullifier(&inv).map_err(err)?
+                && a.amount_zat == inv.amount_zat
+                && a.due_date == inv.due_date,
+        )
+    };
+    Ok(json!({
+        "nullifier": hex(&a.nullifier),
+        "amount_zat": a.amount_zat,
+        "due_date": a.due_date,
+        "financier_pk": hex(&a.financier_pk),
+        "financier_address": a.financier_address,
+        "terms_hash": hex(&a.terms_hash),
+        "matches_invoice": matches,
+    })
+    .to_string())
+}
+
 /// Assignment letter (base64url) of `invoice_b64` to the financier key and pay address.
 pub fn assignment_encode(
     invoice_b64: &str,

@@ -383,6 +383,35 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
 }
 
 #[test]
+fn assignment_decode_shows_what_is_sealed() {
+    let inv_b64 = invoice_b64();
+    let fin = hex(&key(3).verifying_key().to_bytes());
+    let terms = api::document_hash(b"TES-letter");
+    let a_b64 = api::assignment_encode(&inv_b64, &fin, "utest1financier", &terms).unwrap();
+    let d = parse(&api::assignment_decode(&a_b64, &inv_b64).unwrap());
+    let inv = invoice();
+    assert_eq!(d["nullifier"], hex(&jitsuin_core::nullifier(&inv).unwrap()));
+    assert_eq!(d["amount_zat"], inv.amount_zat);
+    assert_eq!(d["due_date"], inv.due_date);
+    assert_eq!(d["financier_pk"], fin);
+    assert_eq!(d["financier_address"], "utest1financier");
+    assert_eq!(d["terms_hash"], terms);
+    assert_eq!(d["matches_invoice"], true);
+    // without an invoice nothing is claimed about the match
+    assert!(parse(&api::assignment_decode(&a_b64, "").unwrap())["matches_invoice"].is_null());
+    // a letter for another invoice is flagged
+    let mut j = parse(&api::invoice_decode(&inv_b64).unwrap());
+    j["supplier_pk"] = Value::String(fin.clone());
+    j["amount_zat"] = Value::from(40_001u64);
+    let other = api::invoice_encode(&j.to_string()).unwrap();
+    assert_eq!(
+        parse(&api::assignment_decode(&a_b64, &other).unwrap())["matches_invoice"],
+        false
+    );
+    assert!(api::assignment_decode("not-a-letter", "").is_err());
+}
+
+#[test]
 fn financier_commitment_is_derived_and_matches_the_supplier_entry() {
     let inv_b64 = invoice_b64();
     let secret = "03".repeat(32);
