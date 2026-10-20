@@ -1,12 +1,13 @@
-//! Byte writer and strict reader for the flow's own formats (deal snapshot, HNK-26.T10). Integers
-//! are little endian, as in `jitsuin-core`; strings and byte strings carry a u16 length.
+//! Byte writer and strict reader for the flow's own formats (deal snapshot HNK-26.T10, repayment
+//! evidence HNK-26.T13). Integers are little endian, as in `jitsuin-core`; strings and byte
+//! strings carry a u16 length.
 
 use jitsuin_board::{BoardRecord, Position};
-use jitsuin_core::{BoardEntry, Seal, SEAL_LEN};
+use jitsuin_core::{BoardEntry, Receipt, Seal, RECEIPT_LEN, SEAL_LEN};
 
 use crate::Error;
 
-const BAD: Error = Error::Snapshot("malformed snapshot");
+const BAD: Error = Error::Format("malformed or truncated data");
 
 #[derive(Default)]
 pub(crate) struct Writer {
@@ -31,7 +32,7 @@ impl Writer {
     }
 
     pub(crate) fn bytes(&mut self, b: &[u8]) -> Result<(), Error> {
-        let len = u16::try_from(b.len()).map_err(|_| Error::Snapshot("field too long"))?;
+        let len = u16::try_from(b.len()).map_err(|_| Error::Format("field too long"))?;
         self.raw(&len.to_le_bytes());
         self.raw(b);
         Ok(())
@@ -42,7 +43,7 @@ impl Writer {
     }
 
     pub(crate) fn strs(&mut self, list: &[String]) -> Result<(), Error> {
-        let n = u16::try_from(list.len()).map_err(|_| Error::Snapshot("list too long"))?;
+        let n = u16::try_from(list.len()).map_err(|_| Error::Format("list too long"))?;
         self.raw(&n.to_le_bytes());
         list.iter().try_for_each(|s| self.str(s))
     }
@@ -63,16 +64,20 @@ impl Writer {
     }
 
     pub(crate) fn records(&mut self, list: &[BoardRecord]) -> Result<(), Error> {
-        let n = u16::try_from(list.len()).map_err(|_| Error::Snapshot("list too long"))?;
+        let n = u16::try_from(list.len()).map_err(|_| Error::Format("list too long"))?;
         self.raw(&n.to_le_bytes());
         list.iter().try_for_each(|r| self.record(r))
     }
 
     pub(crate) fn seals(&mut self, seals: &[Seal]) -> Result<(), Error> {
-        let n = u8::try_from(seals.len()).map_err(|_| Error::Snapshot("too many seals"))?;
+        let n = u8::try_from(seals.len()).map_err(|_| Error::Format("too many seals"))?;
         self.byte(n);
         seals.iter().for_each(|s| self.raw(&s.to_bytes()));
         Ok(())
+    }
+
+    pub(crate) fn receipt(&mut self, r: &Receipt) {
+        self.raw(&r.to_memo_bytes()[..RECEIPT_LEN]);
     }
 }
 
@@ -155,11 +160,15 @@ impl<'a> Reader<'a> {
             .collect()
     }
 
+    pub(crate) fn receipt(&mut self) -> Result<Receipt, Error> {
+        Ok(Receipt::from_memo_bytes(self.take(RECEIPT_LEN)?)?)
+    }
+
     pub(crate) fn finish(&self) -> Result<(), Error> {
         if self.pos == self.bytes.len() {
             Ok(())
         } else {
-            Err(Error::Snapshot("trailing bytes"))
+            Err(Error::Format("trailing bytes"))
         }
     }
 }

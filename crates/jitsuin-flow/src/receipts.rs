@@ -70,14 +70,7 @@ pub fn received(
             if receipt.kind != kind || &receipt.nullifier != nullifier {
                 continue;
             }
-            let verdict = match receipt.verify(signer_pk) {
-                Err(e) => Verdict::BadSignature(e),
-                Ok(()) if receipt.amount_zat != out.value_zat => Verdict::AmountMismatch {
-                    receipt_zat: receipt.amount_zat,
-                    received_zat: out.value_zat,
-                },
-                Ok(()) => Verdict::Valid,
-            };
+            let verdict = verdict(&receipt, out.value_zat, signer_pk);
             found.push(ReceivedReceipt {
                 txid: tx.txid.clone(),
                 mined_height: tx.mined_height,
@@ -90,6 +83,18 @@ pub fn received(
         }
     }
     found
+}
+
+/// Verdict of a receipt carried by an output of `received_zat`, against `signer_pk`.
+pub(crate) fn verdict(receipt: &Receipt, received_zat: u64, signer_pk: &[u8; 32]) -> Verdict {
+    match receipt.verify(signer_pk) {
+        Err(e) => Verdict::BadSignature(e),
+        Ok(()) if receipt.amount_zat != received_zat => Verdict::AmountMismatch {
+            receipt_zat: receipt.amount_zat,
+            received_zat,
+        },
+        Ok(()) => Verdict::Valid,
+    }
 }
 
 #[cfg(test)]

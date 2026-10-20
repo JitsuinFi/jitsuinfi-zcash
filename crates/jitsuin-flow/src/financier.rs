@@ -335,11 +335,11 @@ impl Flow {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let mut r = Reader::new(bytes);
         if r.take(4)? != FLOW_MAGIC {
-            return Err(Error::Snapshot("not a deal snapshot"));
+            return Err(Error::Format("not a deal snapshot"));
         }
         let version = r.byte()?;
         if version != FLOW_VERSION {
-            return Err(Error::Snapshot("unsupported snapshot version"));
+            return Err(Error::Format("unsupported snapshot version"));
         }
         let deal = Deal {
             invoice: Invoice::from_canonical_bytes(r.bytes()?)?,
@@ -351,7 +351,7 @@ impl Flow {
             history_tag: match r.byte()? {
                 0 => None,
                 1 => Some(r.array()?),
-                _ => return Err(Error::Snapshot("malformed snapshot")),
+                _ => return Err(Error::Format("malformed deal snapshot")),
             },
             discount_bucket: r.byte()?,
             tenor_bucket: r.byte()?,
@@ -388,7 +388,7 @@ impl Flow {
                 winner: r.record()?,
                 conflicting: r.records()?,
             }),
-            _ => return Err(Error::Snapshot("unknown state")),
+            _ => return Err(Error::Format("unknown state")),
         };
         r.finish()?;
         match &state {
@@ -415,7 +415,7 @@ impl Flow {
                         next: Role::Financier
                     }
                 ) {
-                    return Err(Error::Snapshot(
+                    return Err(Error::Format(
                         "assignment needs exactly the supplier and buyer seals",
                     ));
                 }
@@ -1350,13 +1350,13 @@ mod tests {
 
         let mut bad = good.clone();
         bad[0] = b'X';
-        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Snapshot(_))));
+        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Format(_))));
         let mut bad = good.clone();
         bad[4] = 2;
-        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Snapshot(_))));
+        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Format(_))));
         let mut bad = good.clone();
         bad.push(0);
-        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Snapshot(_))));
+        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Format(_))));
         assert!(Flow::from_bytes(&good[..good.len() - 1]).is_err());
         // the Pay state with only the supplier's seal: apply would never have reached it
         let mut one_seal = flow.clone();
