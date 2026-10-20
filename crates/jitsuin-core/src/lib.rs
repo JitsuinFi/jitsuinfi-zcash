@@ -22,7 +22,10 @@ pub mod settled;
 
 pub use assignment::Assignment;
 pub use bundle::{Bundle, BundleReport};
-pub use entry::{financier_commitment, settled_tag, BoardEntry, EntryKind, ENTRY_LEN, MEMO_LEN};
+pub use entry::{
+    commitment_opening, commitment_salt, financier_commitment, settled_tag, BoardEntry, EntryKind,
+    ENTRY_LEN, MEMO_LEN,
+};
 pub use error::Error;
 pub use fund::{LiabilityRoot, ReceivableNote};
 pub use history::{BuyerIdentity, HistoryCert};

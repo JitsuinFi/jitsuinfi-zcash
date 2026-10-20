@@ -13,10 +13,11 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
+use jitsuin_core::index::{classes_for, validate_classes};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
-    nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt, ReceiptKind, ReceivableNote,
-    Role, Seal,
+    commitment_opening, nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt,
+    ReceiptKind, ReceivableNote, Role, Seal,
 };
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
@@ -24,6 +25,10 @@ use crate::Error;
 
 /// Value sent with each board entry; the board only needs the memo.
 pub const ENTRY_POST_ZAT: u64 = 10_000;
+
+/// Blocks after which an unmined advance counts as expired and may be paid again (K-7): the
+/// ZIP-203 default expiry delta of 40 blocks plus a margin of 10.
+pub const ADVANCE_EXPIRY_BLOCKS: u32 = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deal {
@@ -41,6 +46,23 @@ pub struct Deal {
     /// Tag of the buyer's new history certificate (HNK-20). When set, the register entry must
     /// carry it, so the invoice joins the buyer's anchored history.
     pub history_tag: Option<[u8; 32]>,
+    /// Discount and tenor classes the register entry must carry (HNK-08, HNK-27.T2), normally
+    /// from [`deal_classes`]; `0/0` means not disclosed.
+    pub discount_bucket: u8,
+    pub tenor_bucket: u8,
+}
+
+/// Classes of a deal for the public rate index: from the face value, the advance, the advance
+/// date and the due date (days since the Unix epoch). A deal that fits no class (advance above
+/// face value, due date before the advance or more than a year later) is registered as `0/0`.
+pub fn deal_classes(invoice: &Invoice, advance_zat: u64, advance_day: u32) -> (u8, u8) {
+    classes_for(
+        invoice.amount_zat,
+        advance_zat,
+        advance_day,
+        invoice.due_date,
+    )
+    .unwrap_or((0, 0))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +82,18 @@ pub enum State {
     Pay {
         entry: BoardRecord,
         assignment_seals: Vec<Seal>,
+        /// Advances sent earlier that expired unmined; never counted as paid again.
+        expired_advances: Vec<String>,
     },
-    /// Advance paid.
+    /// Advance broadcast at `sent_tip`; wait until it is mined (K-7).
+    AwaitAdvanceConfirmation {
+        entry: BoardRecord,
+        assignment_seals: Vec<Seal>,
+        advance_txid: String,
+        sent_tip: u32,
+        expired_advances: Vec<String>,
+    },
+    /// Advance paid and mined.
     Done {
         entry: BoardRecord,
         advance_txid: String,
@@ -79,6 +111,7 @@ impl State {
             State::AwaitConfirmation { .. } => "AwaitConfirmation",
             State::AwaitAssignment { .. } => "AwaitAssignment",
             State::Pay { .. } => "Pay",
+            State::AwaitAdvanceConfirmation { .. } => "AwaitAdvanceConfirmation",
             State::Done { .. } => "Done",
             State::Stopped(_) => "Stopped",
         }
@@ -109,8 +142,15 @@ pub enum Event {
     },
     /// Seals of the assignment letter collected so far (supplier, then buyer).
     AssignmentSealed(Vec<Seal>),
+    /// Advance broadcast (or found already sent), with the chain tip at that time.
     AdvanceSent {
         txid: String,
+        tip_height: u32,
+    },
+    /// Wallet check of the advance: mined or not, and the chain tip.
+    AdvanceChecked {
+        mined: bool,
+        tip_height: u32,
     },
 }
 
@@ -122,6 +162,7 @@ impl Event {
             Event::EntryPosted { .. } => "EntryPosted",
             Event::AssignmentSealed(_) => "AssignmentSealed",
             Event::AdvanceSent { .. } => "AdvanceSent",
+            Event::AdvanceChecked { .. } => "AdvanceChecked",
         }
     }
 }
@@ -143,6 +184,9 @@ impl Flow {
         }
         if deal.supplier_address.is_empty() {
             return Err(Error::InvalidDeal("supplier address is empty"));
+        }
+        if validate_classes(deal.discount_bucket, deal.tenor_bucket).is_err() {
+            return Err(Error::InvalidDeal("unknown discount or tenor class"));
         }
         let nullifier = nullifier(&deal.invoice)?;
         // The letter must belong to this invoice and must not let one key hold two roles.
@@ -170,8 +214,12 @@ impl Flow {
     /// Applies one event. On error the state is unchanged.
     pub fn apply(&mut self, event: Event) -> Result<&State, Error> {
         let next = match (&self.state, event) {
+            // `Register` accepts a board check too (K-4): right before posting, a conflict that
+            // appeared since the first check stops the deal, and an entry of ours that is
+            // already on chain (an earlier attempt) is followed instead of posted again.
             (
                 State::Check
+                | State::Register { .. }
                 | State::AwaitConfirmation { .. }
                 | State::AwaitAssignment { .. }
                 | State::Pay { .. },
@@ -191,6 +239,7 @@ impl Flow {
                     } => State::Pay {
                         entry: entry.clone(),
                         assignment_seals: seals,
+                        expired_advances: Vec::new(),
                     },
                     _ => {
                         return Err(Error::InvalidDeal(
@@ -199,10 +248,48 @@ impl Flow {
                     }
                 }
             }
-            (State::Pay { entry, .. }, Event::AdvanceSent { txid }) => State::Done {
+            (
+                State::Pay {
+                    entry,
+                    assignment_seals,
+                    expired_advances,
+                },
+                Event::AdvanceSent { txid, tip_height },
+            ) => State::AwaitAdvanceConfirmation {
                 entry: entry.clone(),
+                assignment_seals: assignment_seals.clone(),
                 advance_txid: txid,
+                sent_tip: tip_height,
+                expired_advances: expired_advances.clone(),
             },
+            (
+                State::AwaitAdvanceConfirmation {
+                    entry,
+                    assignment_seals,
+                    advance_txid,
+                    sent_tip,
+                    expired_advances,
+                },
+                Event::AdvanceChecked { mined, tip_height },
+            ) => {
+                if mined {
+                    State::Done {
+                        entry: entry.clone(),
+                        advance_txid: advance_txid.clone(),
+                    }
+                } else if tip_height > sent_tip.saturating_add(ADVANCE_EXPIRY_BLOCKS) {
+                    // Expired unmined: back to `Pay`; this txid never counts as paid again.
+                    let mut expired = expired_advances.clone();
+                    expired.push(advance_txid.clone());
+                    State::Pay {
+                        entry: entry.clone(),
+                        assignment_seals: assignment_seals.clone(),
+                        expired_advances: expired,
+                    }
+                } else {
+                    self.state.clone()
+                }
+            }
             (state, event) => {
                 return Err(Error::UnexpectedEvent {
                     state: state.name(),
@@ -230,9 +317,32 @@ impl Flow {
                 State::Stopped(Stop::AlreadyFinanced { winner })
             }
             // Ours (posted now or in an earlier attempt). A re-check after confirmation keeps
-            // the state: it only guards against a late double financing or a reorg.
+            // the state while the entry stays where it was; an entry re-mined at another height
+            // is counted again from there (K-7).
             Lookup::Registered { winner, .. } => match &self.state {
-                State::AwaitAssignment { .. } | State::Pay { .. } => self.state.clone(),
+                State::AwaitAssignment { entry } | State::Pay { entry, .. }
+                    if entry.position == winner.position =>
+                {
+                    self.state.clone()
+                }
+                State::AwaitAssignment { .. } | State::Pay { .. }
+                    if confirmations(tip_height, winner.position.height)
+                        < self.deal.min_confirmations =>
+                {
+                    State::AwaitConfirmation {
+                        entry_txid: winner.txid,
+                    }
+                }
+                State::AwaitAssignment { .. } => State::AwaitAssignment { entry: winner },
+                State::Pay {
+                    assignment_seals,
+                    expired_advances,
+                    ..
+                } => State::Pay {
+                    entry: winner,
+                    assignment_seals: assignment_seals.clone(),
+                    expired_advances: expired_advances.clone(),
+                },
                 _ if confirmations(tip_height, winner.position.height)
                     >= self.deal.min_confirmations =>
                 {
@@ -269,6 +379,13 @@ impl Flow {
         if self.deal.history_tag.is_some() && entry.history_tag != self.deal.history_tag {
             return Err(Error::EntryMismatch("history tag missing or wrong"));
         }
+        if (entry.discount_bucket, entry.tenor_bucket)
+            != (self.deal.discount_bucket, self.deal.tenor_bucket)
+        {
+            return Err(Error::EntryMismatch(
+                "discount or tenor class differs from the deal",
+            ));
+        }
         entry
             .verify(&self.deal.invoice.supplier_ephemeral_pk)
             .map_err(|_| Error::EntryMismatch("supplier signature does not verify"))
@@ -284,14 +401,40 @@ pub fn confirmations(tip_height: u32, height: u32) -> u32 {
     }
 }
 
+/// Txid of a register entry for `nullifier` and `financier_commitment` that this wallet already
+/// sent, mined or not (K-4). Lets `register` after a crash record the earlier post instead of
+/// posting a second entry (two tagged entries for one invoice read as equivocation, Spec #2).
+pub fn sent_entry(
+    txs: &[WalletTx],
+    nullifier: &[u8; 32],
+    financier_commitment: &[u8; 32],
+) -> Option<String> {
+    txs.iter()
+        .find(|tx| {
+            tx.outputs.iter().filter(|o| !o.received).any(|o| {
+                let Memo::Arbitrary(bytes) = &o.memo else {
+                    return false;
+                };
+                BoardEntry::from_memo_bytes(bytes).is_ok_and(|e| {
+                    e.kind.is_register()
+                        && &e.nullifier == nullifier
+                        && &e.financier_commitment == financier_commitment
+                })
+            })
+        })
+        .map(|tx| tx.txid.clone())
+}
+
 /// Txid of an advance receipt for `nullifier`, signed by `financier_pk`, that this wallet already
 /// sent. Lets a retry after a crash record the earlier payment instead of paying twice.
 pub fn sent_advance(
     txs: &[WalletTx],
     nullifier: &[u8; 32],
     financier_pk: &[u8; 32],
+    expired: &[String],
 ) -> Option<String> {
     txs.iter()
+        .filter(|tx| !expired.contains(&tx.txid))
         .find(|tx| {
             tx.outputs.iter().filter(|o| !o.received).any(|o| {
                 let Memo::Arbitrary(bytes) = &o.memo else {
@@ -324,6 +467,13 @@ pub struct Financier {
 }
 
 impl Financier {
+    /// Salt and commitment for a deal on `invoice` (P-08): derived from this financier's key and
+    /// N, so a retry after a crash reuses the same commitment. Send the salt with
+    /// `financier_pk` to the supplier; put the commitment in [`Deal::financier_commitment`].
+    pub fn commitment_opening(&self, invoice: &Invoice) -> Result<([u8; 32], [u8; 32]), Error> {
+        Ok(commitment_opening(&self.key, &nullifier(invoice)?))
+    }
+
     /// Scans the board and feeds the lookup to the flow (states `Check` and `AwaitConfirmation`).
     pub fn check<'f>(&self, flow: &'f mut Flow) -> Result<&'f State, Error> {
         let report = scan(&self.board_watch, &self.lightwalletd)?;
@@ -336,13 +486,25 @@ impl Financier {
         flow.apply(Event::BoardChecked { lookup, tip_height })
     }
 
-    /// Posts the supplier-signed entry to the board (state `Register`).
+    /// Posts the supplier-signed entry to the board (state `Register`). Checks the board once more
+    /// first (a new conflict stops the deal; our own entry already on chain is followed), and
+    /// records an entry this wallet already sent instead of posting it again (K-4).
     pub fn register<'f>(&self, flow: &'f mut Flow) -> Result<&'f State, Error> {
-        let State::Register { entry } = flow.state() else {
+        if !matches!(flow.state(), State::Register { .. }) {
             return Err(unexpected(flow, "register"));
+        }
+        let State::Register { entry } = self.check(flow)?.clone() else {
+            return Ok(flow.state());
         };
-        let memo = entry.to_memo_bytes()[..entry.encoded_len()].to_vec();
         self.wallet.sync()?;
+        if let Some(txid) = sent_entry(
+            &self.wallet.list_tx()?,
+            flow.nullifier(),
+            &flow.deal().financier_commitment,
+        ) {
+            return flow.apply(Event::EntryPosted { txid });
+        }
+        let memo = entry.to_memo_bytes()[..entry.encoded_len()].to_vec();
         let txid = self.wallet.pay(&[Payment {
             address: self.board_address.clone(),
             amount_zat: ENTRY_POST_ZAT,
@@ -386,7 +548,9 @@ impl Financier {
         }
         // Last look: a late double financing or a reorg moves the flow out of `Pay`.
         let State::Pay {
-            assignment_seals, ..
+            assignment_seals,
+            expired_advances,
+            ..
         } = self.check(flow)?.clone()
         else {
             return Ok(flow.state());
@@ -394,8 +558,14 @@ impl Financier {
         let deal = flow.deal().clone();
         let n = *flow.nullifier();
         self.wallet.sync()?;
-        if let Some(txid) = sent_advance(&self.wallet.list_tx()?, &n, &financier_pk) {
-            return flow.apply(Event::AdvanceSent { txid });
+        if let Some(txid) = sent_advance(
+            &self.wallet.list_tx()?,
+            &n,
+            &financier_pk,
+            &expired_advances,
+        ) {
+            let tip_height = lwd::latest_height(&self.lightwalletd)?;
+            return flow.apply(Event::AdvanceSent { txid, tip_height });
         }
         let receipt = Receipt::sign(&self.key, ReceiptKind::Advance, n, deal.advance_zat, date)?;
         let seal = deal.assignment.seal_next(&self.key, &assignment_seals)?;
@@ -415,7 +585,41 @@ impl Financier {
             amount_zat: deal.advance_zat,
             memo: Some(PaymentMemo::Arbitrary(memo)),
         }])?;
-        flow.apply(Event::AdvanceSent { txid })
+        let tip_height = lwd::latest_height(&self.lightwalletd)?;
+        flow.apply(Event::AdvanceSent { txid, tip_height })
+    }
+
+    /// Checks the advance in this wallet until it is mined (`Done`), or it expires unmined and
+    /// the flow goes back to `Pay` for one new payment (state `AwaitAdvanceConfirmation`, K-7).
+    pub fn wait_for_advance<'f>(
+        &self,
+        flow: &'f mut Flow,
+        poll: Duration,
+        timeout: Duration,
+    ) -> Result<&'f State, Error> {
+        let started = Instant::now();
+        loop {
+            let State::AwaitAdvanceConfirmation { advance_txid, .. } = flow.state().clone() else {
+                return Err(unexpected(flow, "wait_for_advance"));
+            };
+            self.wallet.sync()?;
+            let mined = self
+                .wallet
+                .list_tx()?
+                .iter()
+                .any(|tx| tx.txid == advance_txid && tx.mined_height.is_some());
+            let tip_height = lwd::latest_height(&self.lightwalletd)?;
+            if !matches!(
+                flow.apply(Event::AdvanceChecked { mined, tip_height })?,
+                State::AwaitAdvanceConfirmation { .. }
+            ) {
+                return Ok(flow.state());
+            }
+            if started.elapsed() >= timeout {
+                return Err(Error::Timeout("advance not mined"));
+            }
+            thread::sleep(poll);
+        }
     }
 }
 
@@ -496,6 +700,8 @@ mod tests {
             advance_zat: 950_000,
             min_confirmations,
             history_tag: None,
+            discount_bucket: 2,
+            tenor_bucket: 3,
         }
     }
 
@@ -557,7 +763,10 @@ mod tests {
         assert!(matches!(flow.state(), State::AwaitConfirmation { .. }));
         // an advance cannot be recorded before confirmation
         assert!(matches!(
-            flow.apply(Event::AdvanceSent { txid: "x".into() }),
+            flow.apply(Event::AdvanceSent {
+                txid: "x".into(),
+                tip_height: 101
+            }),
             Err(Error::UnexpectedEvent { .. })
         ));
         flow.apply(board(&[grief.clone(), mine.clone()], 102))
@@ -570,7 +779,10 @@ mod tests {
         );
         // confirmed is not enough: no advance without the sealed letter
         assert!(matches!(
-            flow.apply(Event::AdvanceSent { txid: "x".into() }),
+            flow.apply(Event::AdvanceSent {
+                txid: "x".into(),
+                tip_height: 102
+            }),
             Err(Error::UnexpectedEvent { .. })
         ));
         flow.apply(Event::AssignmentSealed(seals())).unwrap();
@@ -578,14 +790,38 @@ mod tests {
             flow.state(),
             &State::Pay {
                 entry: mine.clone(),
-                assignment_seals: seals()
+                assignment_seals: seals(),
+                expired_advances: vec![],
             }
         );
         // the last look before paying keeps the state
         flow.apply(board(&[grief, mine.clone()], 103)).unwrap();
         assert!(matches!(flow.state(), State::Pay { .. }));
 
-        flow.apply(Event::AdvanceSent { txid: "a".into() }).unwrap();
+        flow.apply(Event::AdvanceSent {
+            txid: "a".into(),
+            tip_height: 103,
+        })
+        .unwrap();
+        // broadcast is not paid: wait until the advance is mined
+        assert!(matches!(
+            flow.state(),
+            State::AwaitAdvanceConfirmation { .. }
+        ));
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 104,
+        })
+        .unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::AwaitAdvanceConfirmation { .. }
+        ));
+        flow.apply(Event::AdvanceChecked {
+            mined: true,
+            tip_height: 105,
+        })
+        .unwrap();
         assert_eq!(
             flow.state(),
             &State::Done {
@@ -593,6 +829,68 @@ mod tests {
                 advance_txid: "a".into()
             }
         );
+    }
+
+    #[test]
+    fn an_expired_advance_is_paid_again_once() {
+        let mine = record("e", 20, entry(ours()));
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(std::slice::from_ref(&mine), 20)).unwrap();
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        flow.apply(Event::AdvanceSent {
+            txid: "a1".into(),
+            tip_height: 30,
+        })
+        .unwrap();
+        // still within the expiry window
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 30 + ADVANCE_EXPIRY_BLOCKS,
+        })
+        .unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::AwaitAdvanceConfirmation { .. }
+        ));
+        // expired unmined: back to Pay, and a1 never counts as paid again
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 31 + ADVANCE_EXPIRY_BLOCKS,
+        })
+        .unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::Pay {
+                entry: mine,
+                assignment_seals: seals(),
+                expired_advances: vec!["a1".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn a_re_mined_entry_is_counted_again() {
+        let mut d = deal(3);
+        d.min_confirmations = 3;
+        let mut flow = Flow::new(d).unwrap();
+        let mine = record("e", 20, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&mine), 22)).unwrap();
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        assert!(matches!(flow.state(), State::Pay { .. }));
+        // a reorg re-mines our entry at 24: only 1 confirmation at tip 24, 3 required
+        let moved = record("e", 24, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&moved), 24)).unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::AwaitConfirmation {
+                entry_txid: "e".into()
+            }
+        );
+        // re-mined but already deep enough: stay in AwaitAssignment with the new position
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(std::slice::from_ref(&mine), 22)).unwrap();
+        flow.apply(board(std::slice::from_ref(&moved), 30)).unwrap();
+        assert_eq!(flow.state(), &State::AwaitAssignment { entry: moved });
     }
 
     #[test]
@@ -659,7 +957,10 @@ mod tests {
             Event::SupplierSigned(entry(ours())),
             Event::EntryPosted { txid: "e".into() },
             Event::AssignmentSealed(seals()),
-            Event::AdvanceSent { txid: "a".into() },
+            Event::AdvanceSent {
+                txid: "a".into(),
+                tip_height: 61,
+            },
             board(&[], 61),
         ] {
             assert!(flow.apply(event).is_err());
@@ -714,6 +1015,41 @@ mod tests {
     }
 
     #[test]
+    fn entry_classes_must_match_the_deal() {
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(&[], 1)).unwrap();
+        // 0/0 (or any other class) when the deal says 2/3 is refused, state unchanged
+        for (d, t) in [(0, 0), (3, 3), (2, 4)] {
+            let e = BoardEntry::sign(&supplier(), EntryKind::Register, n(), ours(), d, t);
+            assert!(matches!(
+                flow.apply(Event::SupplierSigned(e)),
+                Err(Error::EntryMismatch(
+                    "discount or tenor class differs from the deal"
+                ))
+            ));
+            assert_eq!(flow.state(), &State::AwaitSupplierSignature);
+        }
+        flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        assert!(matches!(flow.state(), State::Register { .. }));
+    }
+
+    #[test]
+    fn deal_classes_come_from_face_advance_and_dates() {
+        // 1 000 000 zat face, 975 000 advance (2.5% discount), 45 days: same vector as index.rs
+        let mut inv = invoice();
+        inv.amount_zat = 1_000_000;
+        inv.due_date = 20_790;
+        assert_eq!(deal_classes(&inv, 975_000, 20_745), (3, 2));
+        // a deal that fits no class is registered as 0/0
+        assert_eq!(deal_classes(&inv, 1_000_001, 20_745), (0, 0));
+        assert_eq!(deal_classes(&inv, 975_000, 20_791), (0, 0));
+        // an unknown class makes the deal invalid
+        let mut d = deal(1);
+        d.discount_bucket = 99;
+        assert!(matches!(Flow::new(d), Err(Error::InvalidDeal(_))));
+    }
+
+    #[test]
     fn history_tag_is_required_when_the_deal_has_one() {
         let mut d = deal(1);
         d.history_tag = Some([0x77; 32]);
@@ -761,6 +1097,70 @@ mod tests {
     }
 
     #[test]
+    fn a_board_check_right_before_posting_stops_or_follows() {
+        let to_register = || {
+            let mut flow = Flow::new(deal(2)).unwrap();
+            flow.apply(board(&[], 1)).unwrap();
+            flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+            assert!(matches!(flow.state(), State::Register { .. }));
+            flow
+        };
+        // nothing new on the board: still ready to post
+        let mut flow = to_register();
+        flow.apply(board(&[], 2)).unwrap();
+        assert!(matches!(flow.state(), State::Register { .. }));
+        // another financier registered meanwhile: stop, nothing is posted
+        let mut flow = to_register();
+        let theirs = record("t", 2, entry([0xEE; 32]));
+        flow.apply(board(std::slice::from_ref(&theirs), 2)).unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::Stopped(Stop::AlreadyFinanced { .. })
+        ));
+        // our entry from an earlier attempt is already mined: follow it, do not post again
+        let mut flow = to_register();
+        let mine = record("e0", 2, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&mine), 2)).unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::AwaitConfirmation {
+                entry_txid: "e0".into()
+            }
+        );
+    }
+
+    #[test]
+    fn finds_an_entry_already_sent() {
+        let out = |received, memo: Vec<u8>| TxOutput {
+            index: 0,
+            pool: "Ironwood".into(),
+            value_zat: ENTRY_POST_ZAT,
+            is_change: false,
+            received,
+            memo: Memo::Arbitrary(memo),
+        };
+        let tx = |txid: &str, o| WalletTx {
+            txid: txid.into(),
+            mined_height: None,
+            fee_zat: None,
+            outputs: vec![o],
+        };
+        let mine = entry(ours()).to_memo_bytes().to_vec();
+        let other_n = BoardEntry::sign(&supplier(), EntryKind::Register, [8; 32], ours(), 2, 3)
+            .to_memo_bytes()
+            .to_vec();
+        let other_commitment = entry([0xEE; 32]).to_memo_bytes().to_vec();
+        let txs = vec![
+            tx("received", out(true, mine.clone())),
+            tx("other-n", out(false, other_n)),
+            tx("other-commitment", out(false, other_commitment)),
+            tx("pending", out(false, mine)),
+        ];
+        assert_eq!(sent_entry(&txs, &n(), &ours()).as_deref(), Some("pending"));
+        assert_eq!(sent_entry(&txs[..3], &n(), &ours()), None);
+    }
+
+    #[test]
     fn finds_an_advance_already_sent() {
         let pk = financier().verifying_key().to_bytes();
         let receipt = Receipt::sign(&financier(), ReceiptKind::Advance, n(), 950_000, 1).unwrap();
@@ -791,10 +1191,15 @@ mod tests {
             tx("sent", out(false, memo)),
             tx("legacy", out(false, receipt.to_memo_bytes().to_vec())),
         ];
-        assert_eq!(sent_advance(&txs, &n(), &pk).as_deref(), Some("sent"));
-        assert_eq!(sent_advance(&txs[..2], &n(), &pk), None);
+        assert_eq!(sent_advance(&txs, &n(), &pk, &[]).as_deref(), Some("sent"));
+        assert_eq!(sent_advance(&txs[..2], &n(), &pk, &[]), None);
         assert_eq!(
-            sent_advance(&txs[3..], &n(), &pk).as_deref(),
+            sent_advance(&txs[3..], &n(), &pk, &[]).as_deref(),
+            Some("legacy")
+        );
+        // an advance that expired unmined is not counted as sent
+        assert_eq!(
+            sent_advance(&txs, &n(), &pk, &["sent".into()]).as_deref(),
             Some("legacy")
         );
     }

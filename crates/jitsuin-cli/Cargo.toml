@@ -14,6 +14,7 @@ path = "src/main.rs"
 base64 = "0.22"
 jitsuin-board = { path = "../jitsuin-board" }
 jitsuin-core = { path = "../jitsuin-core" }
+jitsuin-flow = { path = "../jitsuin-flow" }
 jitsuin-wallet = { path = "../jitsuin-wallet" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

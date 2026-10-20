@@ -20,6 +20,33 @@ use serde_json::{json, Value};
 
 pub type ApiResult<T> = Result<T, String>;
 
+/// Overwrites `bytes` with zeros in a way the compiler does not remove.
+fn wipe(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // SAFETY: `b` is a valid, aligned `&mut u8`.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Runs `f` with a 32-byte secret given as bytes (P-07, HNK-27.T9): the secret is turned into the
+/// hex form the API takes, `secret` is zeroed at once, and the hex copy is zeroed after `f`. In the
+/// browser `secret` is the page's `Uint8Array` passed as `&mut [u8]`; wasm-bindgen copies it back,
+/// so the page's array is all zeros when the call returns. Best effort: keys derived inside `f`
+/// are dropped (and `SigningKey`, `BuyerIdentity` zero themselves on drop).
+pub fn with_secret<T>(secret: &mut [u8], f: impl FnOnce(&str) -> ApiResult<T>) -> ApiResult<T> {
+    if secret.len() != 32 {
+        wipe(secret);
+        return Err("expected a 32-byte secret".into());
+    }
+    let mut h = hex(secret);
+    wipe(secret);
+    let r = f(&h);
+    // SAFETY: zero bytes are valid UTF-8, so the string stays valid.
+    wipe(unsafe { h.as_bytes_mut() });
+    r
+}
+
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -375,6 +402,15 @@ fn seals_of(json_text: &str) -> ApiResult<Vec<Seal>> {
 /// Financier seal on the assignment letter, the last of the chain, after checking the supplier's
 /// and the buyer's seals (`seals_json`: their seals as a JSON array of base64url). Sign-to-Pay:
 /// the advance goes out only once this seal exists.
+/// Commitment opening of this financier for the invoice (P-08): `{salt, commitment}`, both hex.
+/// Derived from the financier key and N, so asking again gives the same values.
+pub fn financier_commitment(financier_secret_hex: &str, invoice_b64: &str) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(financier_secret_hex)?);
+    let (salt, commitment) = jitsuin_core::commitment_opening(&key, &nullifier(&inv).map_err(err)?);
+    Ok(json!({ "salt": hex(&salt), "commitment": hex(&commitment) }).to_string())
+}
+
 pub fn financier_seal_assignment(
     financier_secret_hex: &str,
     invoice_b64: &str,
@@ -413,14 +449,30 @@ pub fn assignment_status(
         .to_string())
 }
 
+/// Discount and tenor classes for an entry: both given and valid, or both absent (`0/0`, not
+/// disclosed).
+fn entry_classes(discount: Option<u8>, tenor: Option<u8>) -> ApiResult<(u8, u8)> {
+    let (d, t) = match (discount, tenor) {
+        (None, None) => (0, 0),
+        (Some(d), Some(t)) => (d, t),
+        _ => return Err("give both the discount and the tenor class, or neither".into()),
+    };
+    jitsuin_core::index::validate_classes(d, t).map_err(err)?;
+    Ok((d, t))
+}
+
 /// Register entry for the board (memo, base64url), signed with the supplier's key of this invoice,
 /// committing to one financier: `BLAKE2b-256(financier_pk ‖ salt)`. Also returns the commitment.
+/// `discount` and `tenor` are the deal's classes from the financier (both or neither).
 pub fn supplier_register_entry(
     supplier_secret_hex: &str,
     invoice_b64: &str,
     financier_pk_hex: &str,
     salt_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> ApiResult<String> {
+    let (d, t) = entry_classes(discount, tenor)?;
     let inv = invoice(invoice_b64)?;
     let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
     if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
@@ -433,8 +485,8 @@ pub fn supplier_register_entry(
         jitsuin_core::EntryKind::Register,
         nullifier(&inv).map_err(err)?,
         commitment,
-        0,
-        0,
+        d,
+        t,
     );
     Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
 }
@@ -442,11 +494,40 @@ pub fn supplier_register_entry(
 /// Double-signature proof (base64url) from two register memos for the same invoice, signed by its
 /// supplier for two different financiers, with the buyer's invoice signature. Neither entry needs
 /// to be on chain: the second one may only have been offered.
+#[derive(Deserialize)]
+struct EntryAtJson {
+    txid: String,
+    height: u32,
+    tx_index: u32,
+    output_index: u32,
+}
+
+/// Board position `{txid, height, tx_index, output_index}` as JSON, or `None` / `""` for an entry
+/// that is not on chain.
+fn entry_at(json_text: Option<&str>) -> ApiResult<Option<jitsuin_core::EntryAt>> {
+    let Some(text) = json_text.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    let j: EntryAtJson = serde_json::from_str(text).map_err(err)?;
+    unhex::<32>(&j.txid)?;
+    Ok(Some(jitsuin_core::EntryAt {
+        txid: j.txid.trim().to_lowercase(),
+        height: j.height,
+        tx_index: j.tx_index,
+        output_index: j.output_index,
+    }))
+}
+
+/// `first_at_json` and `second_at_json` are the board positions of the two entries (K-3,
+/// HNK-27.T4). `jitsuin verify` needs the first entry's position; the second may be omitted when
+/// it was only offered.
 pub fn double_sign_proof(
     invoice_b64: &str,
     buyer_signature_hex: &str,
     first_memo_b64: &str,
     second_memo_b64: &str,
+    first_at_json: Option<&str>,
+    second_at_json: Option<&str>,
 ) -> ApiResult<String> {
     let entry = |m: &str| jitsuin_core::BoardEntry::from_memo_bytes(&unb64(m)?).map_err(err);
     let p = DoubleSignProof {
@@ -454,10 +535,15 @@ pub fn double_sign_proof(
         buyer_signature: unhex(buyer_signature_hex)?,
         first: entry(first_memo_b64)?,
         second: entry(second_memo_b64)?,
-        first_at: None,
-        second_at: None,
+        first_at: entry_at(first_at_json)?,
+        second_at: entry_at(second_at_json)?,
     };
     p.verify().map_err(err)?;
+    if let (Some(a), Some(b)) = (&p.first_at, &p.second_at) {
+        if (a.height, a.tx_index, a.output_index) >= (b.height, b.tx_index, b.output_index) {
+            return Err("the first entry must come before the second on the board".into());
+        }
+    }
     Ok(b64(&p.to_bytes().map_err(err)?))
 }
 
@@ -480,6 +566,33 @@ pub fn invoice_decode(invoice_b64: &str) -> ApiResult<String> {
         "due_date": inv.due_date,
         "terms_hash": hex(&inv.terms_hash),
         "nullifier": hex(&nullifier(&inv).map_err(err)?),
+    })
+    .to_string())
+}
+
+/// Fields of an assignment letter (P-13, HNK-27.T3), so the supplier and the buyer read what they
+/// seal: N, amount, due date, financier key, pay address and the hash of the letter PDF. With an
+/// invoice, `matches_invoice` says whether N, amount and due date are the invoice's.
+pub fn assignment_decode(assignment_b64: &str, invoice_b64: &str) -> ApiResult<String> {
+    let a = assignment(assignment_b64)?;
+    let matches = if invoice_b64.trim().is_empty() {
+        Value::Null
+    } else {
+        let inv = invoice(invoice_b64)?;
+        Value::Bool(
+            a.nullifier == nullifier(&inv).map_err(err)?
+                && a.amount_zat == inv.amount_zat
+                && a.due_date == inv.due_date,
+        )
+    };
+    Ok(json!({
+        "nullifier": hex(&a.nullifier),
+        "amount_zat": a.amount_zat,
+        "due_date": a.due_date,
+        "financier_pk": hex(&a.financier_pk),
+        "financier_address": a.financier_address,
+        "terms_hash": hex(&a.terms_hash),
+        "matches_invoice": matches,
     })
     .to_string())
 }
@@ -589,7 +702,10 @@ pub fn supplier_register_history_entry(
     financier_pk_hex: &str,
     salt_hex: &str,
     cert_b64: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> ApiResult<String> {
+    let (d, t) = entry_classes(discount, tenor)?;
     let inv = invoice(invoice_b64)?;
     let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
     if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
@@ -602,7 +718,40 @@ pub fn supplier_register_history_entry(
     }
     let commitment =
         jitsuin_core::financier_commitment(&unhex(financier_pk_hex)?, &unhex(salt_hex)?);
-    let e = jitsuin_core::BoardEntry::sign_with_history(&key, n, commitment, 0, 0, cert.tag());
+    let e = jitsuin_core::BoardEntry::sign_with_history(&key, n, commitment, d, t, cert.tag());
+    Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
+}
+
+/// Register memo with a history tag given directly (K-10, HNK-27.T8): the financier checks the
+/// buyer's certificate and passes only its 32-byte tag, so the supplier never holds certificate k
+/// (whose holder can follow the buyer's next invoices, TM #6). The financier's `check_entry`
+/// refuses the entry when the tag is not the one of the checked certificate.
+pub fn supplier_register_tagged_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    history_tag_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> ApiResult<String> {
+    let (d, t) = entry_classes(discount, tenor)?;
+    let inv = invoice(invoice_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
+    if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
+        return Err("key is not the supplier key of this invoice".into());
+    }
+    let n = nullifier(&inv).map_err(err)?;
+    let commitment =
+        jitsuin_core::financier_commitment(&unhex(financier_pk_hex)?, &unhex(salt_hex)?);
+    let e = jitsuin_core::BoardEntry::sign_with_history(
+        &key,
+        n,
+        commitment,
+        d,
+        t,
+        unhex(history_tag_hex)?,
+    );
     Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
 }
 

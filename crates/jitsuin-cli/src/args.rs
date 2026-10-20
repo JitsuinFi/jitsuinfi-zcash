@@ -11,9 +11,11 @@ jitsuin: JitsuinFi registry board verifier (no spending key, no ZEC needed)
 USAGE:
     jitsuin verify (--ufvk <UFVK> | --board <FILE>) [CHECKS] [OPTIONS]
     jitsuin index  (--ufvk <UFVK> | --board <FILE>) [--k <K>] [OPTIONS]
+    jitsuin fund   --ufvk <UFVK> --manager-pk <HEX> [OPTIONS]   (see `jitsuin fund --help`)
 
     verify   List the board's entries and check proofs and bundles against it.
     index    Public rate index: discount by tenor class, from the board (HNK-08).
+    fund     A fund member's solvency check with its own watch-only wallet (HNK-15).
 
 BOARD SOURCE (exactly one):
     --ufvk <UFVK>           Board's unified full viewing key (uview1... or uviewtest1...).

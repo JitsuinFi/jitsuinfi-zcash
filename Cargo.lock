@@ -720,6 +720,7 @@ dependencies = [
  "ed25519-dalek",
  "jitsuin-board",
  "jitsuin-core",
+ "jitsuin-flow",
  "jitsuin-wallet",
  "serde",
  "serde_json",

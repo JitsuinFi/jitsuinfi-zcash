@@ -29,6 +29,20 @@ pub fn document_hash(file: &[u8]) -> String {
     api::document_hash(file)
 }
 
+/// Fields of an assignment letter; pass the invoice (or "") to check that the letter is for it.
+#[wasm_bindgen(js_name = assignmentDecode)]
+pub fn assignment_decode(assignment_b64: &str, invoice_b64: &str) -> Result<String, JsError> {
+    js(api::assignment_decode(assignment_b64, invoice_b64))
+}
+
+#[wasm_bindgen(js_name = financierCommitment)]
+pub fn financier_commitment(
+    financier_secret_hex: &str,
+    invoice_b64: &str,
+) -> Result<String, JsError> {
+    js(api::financier_commitment(financier_secret_hex, invoice_b64))
+}
+
 #[wasm_bindgen(js_name = buyerKeys)]
 pub fn buyer_keys(master_hex: &str, index: u32) -> Result<String, JsError> {
     js(api::buyer_keys(master_hex, index))
@@ -95,32 +109,43 @@ pub fn buyer_history_cert(
 }
 
 #[wasm_bindgen(js_name = supplierRegisterEntry)]
+/// `discount` and `tenor` are the classes from the financier (both or neither; omitted = `0/0`).
 pub fn supplier_register_entry(
     supplier_secret_hex: &str,
     invoice_b64: &str,
     financier_pk_hex: &str,
     salt_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> Result<String, JsError> {
     js(api::supplier_register_entry(
         supplier_secret_hex,
         invoice_b64,
         financier_pk_hex,
         salt_hex,
+        discount,
+        tenor,
     ))
 }
 
 #[wasm_bindgen(js_name = doubleSignProof)]
+/// `first_at` and `second_at`: board positions as JSON `{txid, height, tx_index, output_index}`
+/// (omit for an entry that is not on chain; `jitsuin verify` needs the first one).
 pub fn double_sign_proof(
     invoice_b64: &str,
     buyer_signature_hex: &str,
     first_memo_b64: &str,
     second_memo_b64: &str,
+    first_at: Option<String>,
+    second_at: Option<String>,
 ) -> Result<String, JsError> {
     js(api::double_sign_proof(
         invoice_b64,
         buyer_signature_hex,
         first_memo_b64,
         second_memo_b64,
+        first_at.as_deref(),
+        second_at.as_deref(),
     ))
 }
 
@@ -244,6 +269,8 @@ pub fn supplier_register_history_entry(
     financier_pk_hex: &str,
     salt_hex: &str,
     cert_b64: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> Result<String, JsError> {
     js(api::supplier_register_history_entry(
         supplier_secret_hex,
@@ -251,6 +278,30 @@ pub fn supplier_register_history_entry(
         financier_pk_hex,
         salt_hex,
         cert_b64,
+        discount,
+        tenor,
+    ))
+}
+
+/// Register memo carrying a history tag (hex) from the financier, without certificate k.
+#[wasm_bindgen(js_name = supplierRegisterTaggedEntry)]
+pub fn supplier_register_tagged_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    history_tag_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> Result<String, JsError> {
+    js(api::supplier_register_tagged_entry(
+        supplier_secret_hex,
+        invoice_b64,
+        financier_pk_hex,
+        salt_hex,
+        history_tag_hex,
+        discount,
+        tenor,
     ))
 }
 
@@ -267,4 +318,135 @@ pub fn financier_settle(
         assignment_b64,
         repayment_memo_b64,
     ))
+}
+
+// Byte variants (P-07, HNK-27.T9): the secret is a `Uint8Array` that is all zeros after the call,
+// so the page can derive a key from the passkey PRF for one stamp and keep nothing.
+
+#[wasm_bindgen(js_name = buyerKeysBytes)]
+pub fn buyer_keys_bytes(master: &mut [u8], index: u32) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| api::buyer_keys(m, index)))
+}
+
+#[wasm_bindgen(js_name = buyerSignInvoiceBytes)]
+pub fn buyer_sign_invoice_bytes(
+    master: &mut [u8],
+    index: u32,
+    invoice_b64: &str,
+) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| {
+        api::buyer_sign_invoice(m, index, invoice_b64)
+    }))
+}
+
+#[wasm_bindgen(js_name = buyerSealAssignmentBytes)]
+pub fn buyer_seal_assignment_bytes(
+    master: &mut [u8],
+    index: u32,
+    invoice_b64: &str,
+    assignment_b64: &str,
+    supplier_seal_b64: &str,
+) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| {
+        api::buyer_seal_assignment(m, index, invoice_b64, assignment_b64, supplier_seal_b64)
+    }))
+}
+
+#[wasm_bindgen(js_name = buyerRepaymentBytes)]
+pub fn buyer_repayment_bytes(
+    master: &mut [u8],
+    index: u32,
+    invoice_b64: &str,
+    assignment_b64: &str,
+    date: u32,
+) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| {
+        api::buyer_repayment(m, index, invoice_b64, assignment_b64, date)
+    }))
+}
+
+#[wasm_bindgen(js_name = buyerHistoryCertBytes)]
+pub fn buyer_history_cert_bytes(
+    master: &mut [u8],
+    index: u32,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    prev_b64: &str,
+) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| {
+        api::buyer_history_cert(m, index, invoice_b64, financier_pk_hex, prev_b64)
+    }))
+}
+
+#[wasm_bindgen(js_name = supplierSealAssignmentBytes)]
+pub fn supplier_seal_assignment_bytes(
+    supplier_secret: &mut [u8],
+    invoice_b64: &str,
+    assignment_b64: &str,
+) -> Result<String, JsError> {
+    js(api::with_secret(supplier_secret, |k| {
+        api::supplier_seal_assignment(k, invoice_b64, assignment_b64)
+    }))
+}
+
+#[wasm_bindgen(js_name = supplierRegisterEntryBytes)]
+pub fn supplier_register_entry_bytes(
+    supplier_secret: &mut [u8],
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> Result<String, JsError> {
+    js(api::with_secret(supplier_secret, |k| {
+        api::supplier_register_entry(k, invoice_b64, financier_pk_hex, salt_hex, discount, tenor)
+    }))
+}
+
+#[wasm_bindgen(js_name = supplierRegisterHistoryEntryBytes)]
+#[allow(clippy::too_many_arguments)]
+pub fn supplier_register_history_entry_bytes(
+    supplier_secret: &mut [u8],
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    cert_b64: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> Result<String, JsError> {
+    js(api::with_secret(supplier_secret, |k| {
+        api::supplier_register_history_entry(
+            k,
+            invoice_b64,
+            financier_pk_hex,
+            salt_hex,
+            cert_b64,
+            discount,
+            tenor,
+        )
+    }))
+}
+
+#[wasm_bindgen(js_name = supplierRegisterTaggedEntryBytes)]
+#[allow(clippy::too_many_arguments)]
+pub fn supplier_register_tagged_entry_bytes(
+    supplier_secret: &mut [u8],
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    history_tag_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> Result<String, JsError> {
+    js(api::with_secret(supplier_secret, |k| {
+        api::supplier_register_tagged_entry(
+            k,
+            invoice_b64,
+            financier_pk_hex,
+            salt_hex,
+            history_tag_hex,
+            discount,
+            tenor,
+        )
+    }))
 }

@@ -61,16 +61,24 @@ pub fn received_advances(
     received(txs, ReceiptKind::Advance, nullifier, financier_pk)
 }
 
-/// Sign-to-Pay check for one received advance: the receipt is valid and the seal in the same memo
-/// completes the assignment letter after the supplier and buyer seals (`Sealed`).
+/// Sign-to-Pay check for one received advance: the receipt is valid, states the advance agreed in
+/// the offer (`agreed_advance_zat`, K-6), and the seal in the same memo completes the assignment
+/// letter after the supplier and buyer seals (`Sealed`). Without the amount check a financier
+/// could pay less and still complete the letter, leaving the buyer owing the full face value.
 pub fn verify_sign_to_pay(
     advance: &ReceivedReceipt,
     invoice: &Invoice,
     assignment: &Assignment,
     supplier_and_buyer_seals: &[Seal],
+    agreed_advance_zat: u64,
 ) -> Result<ChainStatus, crate::Error> {
     if !advance.is_valid() {
         return Err(crate::Error::InvalidDeal("advance receipt is not valid"));
+    }
+    if advance.receipt.amount_zat != agreed_advance_zat {
+        return Err(crate::Error::InvalidDeal(
+            "advance differs from the amount agreed in the offer",
+        ));
     }
     let mut chain = supplier_and_buyer_seals.to_vec();
     chain.extend(advance.seals.iter().cloned());
@@ -127,15 +135,20 @@ mod tests {
         let found = received_advances(&txs, &n, &pk);
         assert_eq!(found.len(), 1);
         assert_eq!(
-            verify_sign_to_pay(&found[0], &inv, &a, &prior).unwrap(),
+            verify_sign_to_pay(&found[0], &inv, &a, &prior, 950_000).unwrap(),
             ChainStatus::Sealed
         );
+        // a valid receipt and seal for less than the agreed advance is refused
+        assert!(matches!(
+            verify_sign_to_pay(&found[0], &inv, &a, &prior, 960_000),
+            Err(crate::Error::InvalidDeal(_))
+        ));
         // money without the last seal does not complete the letter
         let bare = r.to_memo_bytes().to_vec();
         let txs = vec![tx("bare", Some(10), 950_000, true, Memo::Arbitrary(bare))];
         let found = received_advances(&txs, &n, &pk);
         assert!(matches!(
-            verify_sign_to_pay(&found[0], &inv, &a, &prior).unwrap(),
+            verify_sign_to_pay(&found[0], &inv, &a, &prior, 950_000).unwrap(),
             ChainStatus::Incomplete { .. }
         ));
     }

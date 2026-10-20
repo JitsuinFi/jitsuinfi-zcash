@@ -307,20 +307,58 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
     let fin_a = hex(&key(3).verifying_key().to_bytes());
     let fin_b = hex(&key(4).verifying_key().to_bytes());
     let a = parse(
-        &api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin_a, &"0a".repeat(32))
-            .unwrap(),
+        &api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin_a,
+            &"0a".repeat(32),
+            None,
+            None,
+        )
+        .unwrap(),
     );
     let b = parse(
-        &api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin_b, &"0b".repeat(32))
-            .unwrap(),
+        &api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin_b,
+            &"0b".repeat(32),
+            Some(2),
+            Some(3),
+        )
+        .unwrap(),
     );
     // only the invoice's supplier key may register it
-    assert!(
-        api::supplier_register_entry(&"02".repeat(32), &inv_b64, &fin_a, &"0a".repeat(32)).is_err()
-    );
+    assert!(api::supplier_register_entry(
+        &"02".repeat(32),
+        &inv_b64,
+        &fin_a,
+        &"0a".repeat(32),
+        None,
+        None
+    )
+    .is_err());
     // the board reads N and the commitment from each memo
     let da = parse(&api::board_memo_describe(a["memo"].as_str().unwrap()).unwrap());
     let db = parse(&api::board_memo_describe(b["memo"].as_str().unwrap()).unwrap());
+    // classes: omitted = 0/0, given = signed into the entry; half or unknown classes refused
+    let ea = jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(a["memo"].as_str().unwrap()))
+        .unwrap();
+    assert_eq!((ea.discount_bucket, ea.tenor_bucket), (0, 0));
+    let eb = jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(b["memo"].as_str().unwrap()))
+        .unwrap();
+    assert_eq!((eb.discount_bucket, eb.tenor_bucket), (2, 3));
+    for (d, t) in [(Some(2), None), (Some(99), Some(3))] {
+        assert!(api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin_a,
+            &"0a".repeat(32),
+            d,
+            t
+        )
+        .is_err());
+    }
     assert_eq!(da["nullifier"], db["nullifier"]);
     assert_ne!(da["financier_commitment"], db["financier_commitment"]);
     let sig = api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap();
@@ -329,6 +367,8 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
         &sig,
         a["memo"].as_str().unwrap(),
         b["memo"].as_str().unwrap(),
+        None,
+        None,
     )
     .unwrap();
     let r = parse(&api::verify_proof(&proof).unwrap());
@@ -339,9 +379,116 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
         &inv_b64,
         &sig,
         a["memo"].as_str().unwrap(),
-        a["memo"].as_str().unwrap()
+        a["memo"].as_str().unwrap(),
+        None,
+        None,
     )
     .is_err());
+    // with board positions the proof passes the board check that `jitsuin verify` runs
+    let at = |txid: &str, height: u32| {
+        format!(r#"{{"txid":"{txid}","height":{height},"tx_index":1,"output_index":0}}"#)
+    };
+    let (ta, tb) = ("aa".repeat(32), "bb".repeat(32));
+    let positioned = api::double_sign_proof(
+        &inv_b64,
+        &sig,
+        a["memo"].as_str().unwrap(),
+        b["memo"].as_str().unwrap(),
+        Some(&at(&ta, 10)),
+        Some(&at(&tb, 12)),
+    )
+    .unwrap();
+    let p = jitsuin_core::DoubleSignProof::from_bytes(&base64_decode(&positioned)).unwrap();
+    let rec = |txid: &str, height: u32, memo: &str| jitsuin_board::BoardRecord {
+        txid: txid.into(),
+        position: jitsuin_board::Position {
+            height,
+            tx_index: 1,
+            output_index: 0,
+        },
+        entry: jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(memo)).unwrap(),
+    };
+    let board = [
+        rec(&ta, 10, a["memo"].as_str().unwrap()),
+        rec(&tb, 12, b["memo"].as_str().unwrap()),
+    ];
+    assert!(jitsuin_board::verify_proof_on_board(&p, &board));
+    let r = parse(&api::verify_proof(&positioned).unwrap());
+    assert_eq!(r["first_at"]["height"], 10);
+    // without the first position the board check fails, as in `jitsuin verify`
+    let unpositioned = jitsuin_core::DoubleSignProof::from_bytes(&base64_decode(&proof)).unwrap();
+    assert!(!jitsuin_board::verify_proof_on_board(&unpositioned, &board));
+    // positions in the wrong order, or a bad txid, are refused
+    for (fa, fb) in [(at(&ta, 12), at(&tb, 10)), (at("zz", 10), at(&tb, 12))] {
+        assert!(api::double_sign_proof(
+            &inv_b64,
+            &sig,
+            a["memo"].as_str().unwrap(),
+            b["memo"].as_str().unwrap(),
+            Some(&fa),
+            Some(&fb),
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn assignment_decode_shows_what_is_sealed() {
+    let inv_b64 = invoice_b64();
+    let fin = hex(&key(3).verifying_key().to_bytes());
+    let terms = api::document_hash(b"TES-letter");
+    let a_b64 = api::assignment_encode(&inv_b64, &fin, "utest1financier", &terms).unwrap();
+    let d = parse(&api::assignment_decode(&a_b64, &inv_b64).unwrap());
+    let inv = invoice();
+    assert_eq!(d["nullifier"], hex(&jitsuin_core::nullifier(&inv).unwrap()));
+    assert_eq!(d["amount_zat"], inv.amount_zat);
+    assert_eq!(d["due_date"], inv.due_date);
+    assert_eq!(d["financier_pk"], fin);
+    assert_eq!(d["financier_address"], "utest1financier");
+    assert_eq!(d["terms_hash"], terms);
+    assert_eq!(d["matches_invoice"], true);
+    // without an invoice nothing is claimed about the match
+    assert!(parse(&api::assignment_decode(&a_b64, "").unwrap())["matches_invoice"].is_null());
+    // a letter for another invoice is flagged
+    let mut j = parse(&api::invoice_decode(&inv_b64).unwrap());
+    j["supplier_pk"] = Value::String(fin.clone());
+    j["amount_zat"] = Value::from(40_001u64);
+    let other = api::invoice_encode(&j.to_string()).unwrap();
+    assert_eq!(
+        parse(&api::assignment_decode(&a_b64, &other).unwrap())["matches_invoice"],
+        false
+    );
+    assert!(api::assignment_decode("not-a-letter", "").is_err());
+}
+
+#[test]
+fn financier_commitment_is_derived_and_matches_the_supplier_entry() {
+    let inv_b64 = invoice_b64();
+    let secret = "03".repeat(32);
+    let o = parse(&api::financier_commitment(&secret, &inv_b64).unwrap());
+    // asking again (a retry after a crash) gives the same opening
+    assert_eq!(
+        parse(&api::financier_commitment(&secret, &inv_b64).unwrap()),
+        o
+    );
+    let n = jitsuin_core::nullifier(&invoice()).unwrap();
+    let (salt, c) = jitsuin_core::commitment_opening(&key(3), &n);
+    assert_eq!(o["salt"], hex(&salt));
+    assert_eq!(o["commitment"], hex(&c));
+    // the supplier signs an entry for exactly that commitment from the opening
+    let fin = hex(&key(3).verifying_key().to_bytes());
+    let e = parse(
+        &api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin,
+            o["salt"].as_str().unwrap(),
+            None,
+            None,
+        )
+        .unwrap(),
+    );
+    assert_eq!(e["commitment"], o["commitment"]);
 }
 
 /// Invoice `index` of `MASTER`'s buyer, supplier key 0x01, due `due`.
@@ -385,9 +532,28 @@ fn a_repaid_history_verifies_and_a_hidden_invoice_is_caught() {
                 &fin_pk,
                 &"0a".repeat(32),
                 &cert,
+                Some(2),
+                Some(3),
             )
             .unwrap(),
         );
+        // the tag-only variant signs the same entry without certificate k
+        let tag = jitsuin_core::HistoryCert::from_bytes(&base64_decode(&cert))
+            .unwrap()
+            .tag();
+        let tagged = parse(
+            &api::supplier_register_tagged_entry(
+                &"01".repeat(32),
+                &inv,
+                &fin_pk,
+                &"0a".repeat(32),
+                &hex(&tag),
+                Some(2),
+                Some(3),
+            )
+            .unwrap(),
+        );
+        assert_eq!(tagged, reg);
         let letter = api::assignment_encode(&inv, &fin_pk, "utest1financier", &terms).unwrap();
         let pay = parse(&api::buyer_repayment(MASTER, i, &inv, &letter, paid).unwrap());
         let settled = parse(
@@ -436,4 +602,26 @@ fn a_repaid_history_verifies_and_a_hidden_invoice_is_caught() {
     assert!(api::verify_history(&first_only, &id_pk, &allow, &board, 20_100, 7).is_err());
     let second_only = serde_json::json!([certs[1]]).to_string();
     assert!(api::verify_history(&second_only, &id_pk, &allow, &board, 20_100, 7).is_err());
+}
+
+#[test]
+fn byte_secrets_are_zeroed_after_use() {
+    let inv_b64 = invoice_b64();
+    let mut master = [0x42u8; 32];
+    let sig = api::with_secret(&mut master, |m| api::buyer_sign_invoice(m, 0, &inv_b64)).unwrap();
+    // same signature as the hex API, and the caller's bytes are zero afterwards
+    assert_eq!(sig, api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap());
+    assert_eq!(master, [0u8; 32]);
+    // a wrong length is refused and still wiped
+    let mut short = [7u8; 16];
+    assert!(api::with_secret(&mut short, |m| api::buyer_keys(m, 0)).is_err());
+    assert_eq!(short, [0u8; 16]);
+    // an error inside the call still leaves the secret wiped
+    let mut supplier = [0x02u8; 32];
+    let fin = hex(&key(3).verifying_key().to_bytes());
+    let r = api::with_secret(&mut supplier, |k| {
+        api::supplier_register_entry(k, &inv_b64, &fin, &"0a".repeat(32), None, None)
+    });
+    assert!(r.is_err()); // 0x02 is not the invoice's supplier key
+    assert_eq!(supplier, [0u8; 32]);
 }

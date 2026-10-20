@@ -36,6 +36,17 @@ pub struct BuyerIdentity {
     master: [u8; 32],
 }
 
+impl Drop for BuyerIdentity {
+    /// Overwrites the master secret when the identity goes out of scope (P-07, HNK-27.T9).
+    fn drop(&mut self) {
+        for b in self.master.iter_mut() {
+            // SAFETY: `b` is a valid, aligned `&mut u8`; volatile so the write is not elided.
+            unsafe { std::ptr::write_volatile(b, 0) };
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl BuyerIdentity {
     /// From 32 bytes of master secret (for example a WebAuthn PRF output).
     pub fn from_master_secret(master: [u8; 32]) -> Self {

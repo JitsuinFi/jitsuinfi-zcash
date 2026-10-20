@@ -199,6 +199,37 @@ impl BoardEntry {
     }
 }
 
+const COMMITMENT_SALT_PERSONALIZATION: &[u8; 16] = b"JitsuinCommSalt_";
+
+/// Commitment salt of this financier for the invoice with nullifier `nullifier` (P-08, HNK-27.T1):
+/// `BLAKE2b-256(key = financier secret, personalization = "JitsuinCommSalt_", "salt" ‖ N)`.
+///
+/// Derived, not random: the same financier always gets the same salt for the same invoice, so a
+/// retry after a crash yields the same commitment and never a second one (two commitments of one
+/// financier would make a valid double-signature proof against an honest supplier). Nobody without
+/// the financier's key can predict the salt or link two commitments of the same financier.
+pub fn commitment_salt(financier: &SigningKey, nullifier: &[u8; 32]) -> [u8; 32] {
+    let hash = blake2b_simd::Params::new()
+        .hash_length(32)
+        .key(&financier.to_bytes())
+        .personal(COMMITMENT_SALT_PERSONALIZATION)
+        .to_state()
+        .update(b"salt")
+        .update(nullifier)
+        .finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hash.as_bytes());
+    out
+}
+
+/// Salt and commitment of this financier for `nullifier`: the opening the financier sends to the
+/// supplier, and the value the register entry must carry.
+pub fn commitment_opening(financier: &SigningKey, nullifier: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    let salt = commitment_salt(financier, nullifier);
+    let pk = financier.verifying_key().to_bytes();
+    (salt, financier_commitment(&pk, &salt))
+}
+
 /// `financier_commitment = BLAKE2b-256(financier_pk ‖ salt)`. The salt stays with the financier and
 /// the supplier, so the board does not reveal who financed the invoice.
 pub fn financier_commitment(financier_pk: &[u8; 32], salt: &[u8; 32]) -> [u8; 32] {
@@ -247,6 +278,33 @@ impl BoardEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commitment_salt_is_stable_per_financier_and_invoice() {
+        let f = SigningKey::from_bytes(&[1; 32]);
+        let g = SigningKey::from_bytes(&[2; 32]);
+        let (salt, c) = commitment_opening(&f, &[7; 32]);
+        // A retry gives the same opening.
+        assert_eq!(commitment_opening(&f, &[7; 32]), (salt, c));
+        assert_eq!(
+            c,
+            financier_commitment(&f.verifying_key().to_bytes(), &salt)
+        );
+        // Another invoice or another financier gives another salt and commitment.
+        assert_ne!(commitment_salt(&f, &[8; 32]), salt);
+        assert_ne!(commitment_salt(&g, &[7; 32]), salt);
+        assert_ne!(commitment_opening(&f, &[8; 32]).1, c);
+    }
+
+    #[test]
+    fn commitment_salt_vector() {
+        let f = SigningKey::from_bytes(&[1; 32]);
+        let salt = commitment_salt(&f, &[7; 32]);
+        let hex: String = salt.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, VECTOR_SALT);
+    }
+
+    const VECTOR_SALT: &str = "caaf1dce90a13c204ad70d305bf31a307b5dea3a82f764f2a6787788919a7d23";
 
     #[test]
     fn tagged_register_entry_roundtrip() {
