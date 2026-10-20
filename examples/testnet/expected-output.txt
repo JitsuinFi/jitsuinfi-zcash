@@ -1,0 +1,24 @@
+Board    snapshot examples/testnet/board-snapshot.json
+Entries  9 register (2 with history tag), 2 settled, 0 rejected memo(s)
+
+  height      tx  out  kind      N / tag       commitment    d/t  txid
+  4508981      2    2  register  424242424242  dddddddddddd  2/3  8d8835f72129468ee06486458318355ebe98388594ae8f962ab814f99be887bc
+  4509045      4    2  register  424242424242  eeeeeeeeeeee  2/3  b8a272a87ad9023f3a00a6ffb630e8a584ba0a279af624cda939426c75809970
+  4509045      4    3  register  424242424242  999999999999  2/3  b8a272a87ad9023f3a00a6ffb630e8a584ba0a279af624cda939426c75809970
+  4509085      1    1  register  d415575c392c  b359265f3d42  2/3  fe33137b7b76ce86e5c32d2e4bd6f271806b685837c6a99160857810ce7a98bc
+  4509299      2    0  register  56edc4f5ed4b  b359265f3d42  2/3  33b8f3b0aa754e790e9c7fac0ae7dc08ce8612a8c26620d551d790e1ea390a56
+  4509304      1    1  settled   2e5896443d18  -             -    dcba74c63a701057d0e6e5f2cee4391b509d393c792801449c772c9552b7cad3
+  4509423      2    1  history   084137aadfe4  b2a49b8e19f6  1/1  89af294e09372d137cb9eae95b7b1ba8c7710bb9d14fe2584b4b8951f8cba4bf
+  4509440      1    0  settled   81f9150757c3  -             -    c60c777ec90cde166324df723ff7695149301f24db0f4d421f68c78dd62845fa
+  4509443      2    0  history   d0b63f6a7c99  b2a49b8e19f6  1/1  fe7136876222e31921b7dd14ecf8b7a5efdeaf8a0c12179badc15389dd1db608
+  4509521      3    0  register  56edc4f5ed4b  bf1766fda955  2/3  05d5aa7a02a33c14d460922468745fb4d6d814daa83989eed22b21c0540c79eb
+  4511024      1    0  register  305d2561a4b1  6735c27da62f  1/1  72d0e3ed66c757cdb44e570f25ed77191b3e0f8aa111f4757ef65cc29f999083
+
+Proof  examples/testnet/proof-tes-inv-0003.txt
+  PASS  signatures: buyer signed invoice TES-INV-0003-1792179703; supplier signed N 56edc4f5ed4b for 2 different financiers (b359265f3d42 and bf1766fda955)
+  PASS  first entry: on the board at 4509299/2/0 (txid 33b8f3b0aa754e790e9c7fac0ae7dc08ce8612a8c26620d551d790e1ea390a56)
+  PASS  second entry: on the board at 4509521/3/0 (txid 05d5aa7a02a33c14d460922468745fb4d6d814daa83989eed22b21c0540c79eb)
+  PASS  order: the first entry came before the second
+  => DOUBLE FINANCING PROVEN
+
+Result   PASS (4 check(s), 0 failed)
