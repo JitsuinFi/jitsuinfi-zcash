@@ -265,7 +265,7 @@ pub fn verify_proof(proof_b64: &str) -> ApiResult<String> {
     let r = p.verify().map_err(err)?;
     let at = |a: &Option<jitsuin_core::EntryAt>| {
         a.as_ref()
-            .map(|a| json!({ "txid": a.txid, "height": a.height }))
+            .map(|a| json!({ "txid": a.txid, "height": a.height, "tx_index": a.tx_index, "output_index": a.output_index }))
             .unwrap_or(Value::Null)
     };
     Ok(json!({

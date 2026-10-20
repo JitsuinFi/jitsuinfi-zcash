@@ -415,6 +415,13 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
     assert!(jitsuin_board::verify_proof_on_board(&p, &board));
     let r = parse(&api::verify_proof(&positioned).unwrap());
     assert_eq!(r["first_at"]["height"], 10);
+    assert_eq!(
+        (
+            r["first_at"]["tx_index"].clone(),
+            r["first_at"]["output_index"].clone()
+        ),
+        (serde_json::json!(1), serde_json::json!(0))
+    );
     // without the first position the board check fails, as in `jitsuin verify`
     let unpositioned = jitsuin_core::DoubleSignProof::from_bytes(&base64_decode(&proof)).unwrap();
     assert!(!jitsuin_board::verify_proof_on_board(&unpositioned, &board));
