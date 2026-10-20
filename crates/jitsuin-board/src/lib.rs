@@ -327,9 +327,29 @@ pub fn proof_from_offer(
     }
 }
 
+/// Each claim a double-signature proof makes about the board, one field per line of
+/// `jitsuin verify` (and of the Verify page, through jitsuin-wasm `verifyProofOnBoard`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProofOnBoard {
+    /// The first entry is on the board at the claimed position; `None` when the proof gives no
+    /// position for it, and then the proof does not hold.
+    pub first: Option<bool>,
+    /// The second entry is on the board at the claimed position; `None` when it was offered
+    /// off-chain to the financier that caught it and never posted.
+    pub second: Option<bool>,
+    /// Both entries have a position and the first comes before the second; `None` otherwise.
+    pub ordered: Option<bool>,
+}
+
+impl ProofOnBoard {
+    pub fn holds(&self) -> bool {
+        self.first == Some(true) && self.second != Some(false) && self.ordered != Some(false)
+    }
+}
+
 /// Checks the positions a proof claims: each entry with a position is on the board exactly
 /// there, and the first entry comes before the second when both are on chain.
-pub fn verify_proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -> bool {
+pub fn proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -> ProofOnBoard {
     let found = |e: &BoardEntry, at: &EntryAt| {
         records.iter().any(|r| {
             &r.entry == e
@@ -342,17 +362,22 @@ pub fn verify_proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -
                     }
         })
     };
-    let ok = |e: &BoardEntry, at: &Option<EntryAt>| at.as_ref().is_none_or(|at| found(e, at));
     let ordered = match (&proof.first_at, &proof.second_at) {
         (Some(a), Some(b)) => {
-            (a.height, a.tx_index, a.output_index) < (b.height, b.tx_index, b.output_index)
+            Some((a.height, a.tx_index, a.output_index) < (b.height, b.tx_index, b.output_index))
         }
-        _ => true,
+        _ => None,
     };
-    proof.first_at.is_some()
-        && ok(&proof.first, &proof.first_at)
-        && ok(&proof.second, &proof.second_at)
-        && ordered
+    ProofOnBoard {
+        first: proof.first_at.as_ref().map(|at| found(&proof.first, at)),
+        second: proof.second_at.as_ref().map(|at| found(&proof.second, at)),
+        ordered,
+    }
+}
+
+/// True when every position the proof claims is on the board (see [`proof_on_board`]).
+pub fn verify_proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -> bool {
+    proof_on_board(proof, records).holds()
 }
 
 /// Public rate index of the board (HNK-08). Records are put in board order first, so every
@@ -361,6 +386,52 @@ pub fn rate_index(records: &[BoardRecord], k: usize) -> RateIndex {
     let mut ordered: Vec<&BoardRecord> = records.iter().collect();
     ordered.sort_by_key(|r| r.position);
     RateIndex::compute(ordered.into_iter().map(|r| &r.entry), k)
+}
+
+/// The rate index as JSON: what `jitsuin index --json` prints (it adds the version and the
+/// board origin) and what the web index page shows through jitsuin-wasm `rateIndex`.
+pub fn rate_index_json(i: &RateIndex) -> serde_json::Value {
+    use jitsuin_core::index::{
+        discount_class, tenor_class, Class, DISCOUNT_CLASSES, TENOR_CLASSES,
+    };
+    use serde_json::json;
+    let label = |c: Option<&Class>| c.map_or("?", |c| c.label);
+    let class =
+        |c: &Class| json!({ "class": c.code, "label": c.label, "min": c.min, "max": c.max });
+    json!({
+        "k": i.k,
+        "entries": i.entries,
+        "invoices": i.invoices,
+        "undisclosed": i.undisclosed,
+        "invalid": i.invalid,
+        "tenors": i.tenors.iter().map(|row| match &row.published {
+            None => json!({
+                "tenor": row.tenor,
+                "label": label(tenor_class(row.tenor)),
+                "published": false,
+            }),
+            Some(p) => json!({
+                "tenor": row.tenor,
+                "label": label(tenor_class(row.tenor)),
+                "published": true,
+                "invoices": p.invoices,
+                "median_discount": {
+                    "class": p.median_discount,
+                    "label": label(discount_class(p.median_discount)),
+                },
+                "discounts": p.discounts.iter().map(|d| json!({
+                    "class": d.discount,
+                    "label": label(discount_class(d.discount)),
+                    "invoices": d.invoices,
+                })).collect::<Vec<_>>(),
+                "other": p.other,
+            }),
+        }).collect::<Vec<_>>(),
+        "classes": {
+            "discount_bps": DISCOUNT_CLASSES.iter().map(class).collect::<Vec<_>>(),
+            "tenor_days": TENOR_CLASSES.iter().map(class).collect::<Vec<_>>(),
+        },
+    })
 }
 
 #[cfg(feature = "net")]

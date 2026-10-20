@@ -710,6 +710,7 @@ dependencies = [
  "jitsuin-core",
  "jitsuin-wallet",
  "reqwest",
+ "serde_json",
 ]
 
 [[package]]

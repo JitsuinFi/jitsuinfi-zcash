@@ -2,7 +2,7 @@
 //! with its viewing key. The numbers come from `jitsuin_board::rate_index`; this module only
 //! prints them.
 
-use jitsuin_core::index::{discount_class, tenor_class, DISCOUNT_CLASSES, TENOR_CLASSES};
+use jitsuin_core::index::{discount_class, tenor_class};
 use jitsuin_core::RateIndex;
 use serde_json::{json, Value};
 
@@ -59,41 +59,8 @@ pub fn render_text(board: &Board, i: &RateIndex) -> String {
 }
 
 pub fn render_json(board: &Board, i: &RateIndex) -> Value {
-    let class = |c: &jitsuin_core::index::Class| json!({ "class": c.code, "label": c.label, "min": c.min, "max": c.max });
-    json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "board": board.origin.to_json(),
-        "k": i.k,
-        "entries": i.entries,
-        "invoices": i.invoices,
-        "undisclosed": i.undisclosed,
-        "invalid": i.invalid,
-        "tenors": i.tenors.iter().map(|row| match &row.published {
-            None => json!({
-                "tenor": row.tenor,
-                "label": label(tenor_class(row.tenor)),
-                "published": false,
-            }),
-            Some(p) => json!({
-                "tenor": row.tenor,
-                "label": label(tenor_class(row.tenor)),
-                "published": true,
-                "invoices": p.invoices,
-                "median_discount": {
-                    "class": p.median_discount,
-                    "label": label(discount_class(p.median_discount)),
-                },
-                "discounts": p.discounts.iter().map(|d| json!({
-                    "class": d.discount,
-                    "label": label(discount_class(d.discount)),
-                    "invoices": d.invoices,
-                })).collect::<Vec<_>>(),
-                "other": p.other,
-            }),
-        }).collect::<Vec<_>>(),
-        "classes": {
-            "discount_bps": DISCOUNT_CLASSES.iter().map(class).collect::<Vec<_>>(),
-            "tenor_days": TENOR_CLASSES.iter().map(class).collect::<Vec<_>>(),
-        },
-    })
+    let mut v = jitsuin_board::rate_index_json(i);
+    v["version"] = json!(env!("CARGO_PKG_VERSION"));
+    v["board"] = board.origin.to_json();
+    v
 }

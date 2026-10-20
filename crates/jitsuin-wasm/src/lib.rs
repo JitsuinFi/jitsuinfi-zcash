@@ -205,6 +205,25 @@ pub fn bundle_on_board(bundle_b64: &str, board_json: &str) -> Result<String, JsE
     js(api::bundle_on_board(bundle_b64, board_json))
 }
 
+#[wasm_bindgen(js_name = verifyProofOnBoard)]
+pub fn verify_proof_on_board(proof_b64: &str, board_json: &str) -> Result<String, JsError> {
+    js(api::verify_proof_on_board(proof_b64, board_json))
+}
+
+#[wasm_bindgen(js_name = rateIndex)]
+pub fn rate_index(board_json: &str, k: u32) -> Result<String, JsError> {
+    js(api::rate_index(board_json, k))
+}
+
+#[wasm_bindgen(js_name = historyNext)]
+pub fn history_next(
+    certs_json: &str,
+    identity_pk_hex: &str,
+    board_json: &str,
+) -> Result<String, JsError> {
+    js(api::history_next(certs_json, identity_pk_hex, board_json))
+}
+
 #[wasm_bindgen(js_name = verifyHistory)]
 pub fn verify_history(
     certs_json: &str,

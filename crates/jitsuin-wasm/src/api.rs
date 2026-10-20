@@ -5,7 +5,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::SigningKey;
-use jitsuin_board::history::{verify_history as board_verify_history, Outcome};
+use jitsuin_board::history::{own_chain, verify_history as board_verify_history, Outcome};
 use jitsuin_board::{bundle_on_board as board_bundle_on_board, Collected, Lookup, Position};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
@@ -265,7 +265,7 @@ pub fn verify_proof(proof_b64: &str) -> ApiResult<String> {
     let r = p.verify().map_err(err)?;
     let at = |a: &Option<jitsuin_core::EntryAt>| {
         a.as_ref()
-            .map(|a| json!({ "txid": a.txid, "height": a.height }))
+            .map(|a| json!({ "txid": a.txid, "height": a.height, "tx_index": a.tx_index, "output_index": a.output_index }))
             .unwrap_or(Value::Null)
     };
     Ok(json!({
@@ -305,6 +305,52 @@ fn board(board_json: &str) -> ApiResult<Collected> {
     Ok(c)
 }
 
+/// A double-signature proof checked against board data in the browser (HNK-28.T2, BL-D27-05):
+/// the signatures, then every board position the proof claims, by the same rule as
+/// `jitsuin verify` (`jitsuin_board::proof_on_board`). A position the proof only claims is
+/// reported as claimed, never as a fact; a proof without the first entry's position fails.
+pub fn verify_proof_on_board(proof_b64: &str, board_json: &str) -> ApiResult<String> {
+    let p = DoubleSignProof::from_bytes(&unb64(proof_b64)?).map_err(err)?;
+    let c = board(board_json)?;
+    let at = |a: &Option<jitsuin_core::EntryAt>| {
+        a.as_ref()
+            .map(|a| json!({ "txid": a.txid, "height": a.height, "tx_index": a.tx_index, "output_index": a.output_index }))
+            .unwrap_or(Value::Null)
+    };
+    let signatures = match p.verify() {
+        Ok(r) => json!({
+            "ok": true,
+            "nullifier": hex(&r.nullifier),
+            "supplier_pk": hex(&r.supplier_pk),
+            "first_commitment": hex(&r.first_commitment),
+            "second_commitment": hex(&r.second_commitment),
+            "invoice_id": p.invoice.invoice_id,
+        }),
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    };
+    let claims = jitsuin_board::proof_on_board(&p, &c.records);
+    let holds = signatures["ok"] == true && claims.holds();
+    Ok(json!({
+        "holds": holds,
+        "signatures": signatures,
+        "first": { "claimed_at": at(&p.first_at), "on_board": claims.first },
+        "second": { "claimed_at": at(&p.second_at), "on_board": claims.second },
+        "ordered": claims.ordered,
+        "board_entries": c.records.len(),
+    })
+    .to_string())
+}
+
+/// The public rate index of board data (HNK-28.T3, BL-D28-05): the same numbers and JSON shape
+/// as `jitsuin index --json`, without its version and board origin.
+pub fn rate_index(board_json: &str, k: u32) -> ApiResult<String> {
+    let c = board(board_json)?;
+    Ok(
+        jitsuin_board::rate_index_json(&jitsuin_board::rate_index(&c.records, k as usize))
+            .to_string(),
+    )
+}
+
 /// Bundle checked against board data in the browser, without trusting the server's verdict.
 pub fn bundle_on_board(bundle_b64: &str, board_json: &str) -> ApiResult<String> {
     let b = Bundle::from_bytes(&unb64(bundle_b64)?).map_err(err)?;
@@ -334,6 +380,30 @@ pub fn bundle_on_board(bundle_b64: &str, board_json: &str) -> ApiResult<String> 
 }
 
 /// Buyer history checked against board data in the browser (HNK-20).
+/// The buyer's next invoice index from its own certificates and board data (HNK-25.T2, P-09):
+/// anchored certificates count, never-anchored trailing ones are dropped, and a successor tag
+/// already on the board means this device is missing its newest certificate.
+pub fn history_next(
+    certs_json: &str,
+    identity_pk_hex: &str,
+    board_json: &str,
+) -> ApiResult<String> {
+    let certs: Vec<String> = serde_json::from_str(certs_json).map_err(err)?;
+    let certs: Vec<HistoryCert> = certs
+        .iter()
+        .map(|c| HistoryCert::from_bytes(&unb64(c)?).map_err(err))
+        .collect::<ApiResult<_>>()?;
+    let c = board(board_json)?;
+    let r = own_chain(&certs, &unhex(identity_pk_hex)?, &c.records).map_err(err)?;
+    Ok(json!({
+        "anchored": r.anchored,
+        "dropped": r.dropped,
+        "next_index": r.next_index,
+        "successor_on_board": r.successor_on_board,
+    })
+    .to_string())
+}
+
 pub fn verify_history(
     certs_json: &str,
     identity_pk_hex: &str,

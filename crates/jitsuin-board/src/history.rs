@@ -164,6 +164,65 @@ pub fn verify_history(
     Ok(report)
 }
 
+/// The buyer's own view of its chain (P-09, HNK-25.T2): which of the certificates it holds are
+/// anchored on the board, and so which invoice index `k` comes next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnChain {
+    /// Leading certificates anchored by exactly one valid register entry for their invoice.
+    pub anchored: usize,
+    /// Indices of the trailing certificates no register entry ever anchored (the financier did
+    /// not register). They are dropped: disclosing them would fail with `NotAnchored`.
+    pub dropped: Vec<u32>,
+    /// The next invoice index: the number of anchored certificates.
+    pub next_index: u32,
+    /// A register entry already carries the tag the next certificate would carry: this device
+    /// is missing the newest certificate (lost, or deleted by a relay). Issuing index
+    /// `next_index` again would fork the history, so the buyer must not.
+    pub successor_on_board: bool,
+}
+
+/// Works out the buyer's next invoice index from its own certificates and the board, instead of
+/// a typed number. Fails on a chain that does not hold together (gaps, wrong links, another
+/// identity), on two anchors for one certificate, and on an anchored certificate after an
+/// unanchored one.
+pub fn own_chain(
+    certs: &[HistoryCert],
+    identity_pk: &[u8; 32],
+    records: &[BoardRecord],
+) -> Result<OwnChain, HistoryError> {
+    verify_certs(certs, identity_pk)?;
+    let anchored_once = |c: &HistoryCert| -> Result<bool, HistoryError> {
+        let anchors: Vec<&BoardRecord> = tagged(records, c.tag())
+            .filter(|r| r.entry.verify(&c.supplier_pk).is_ok() && r.entry.nullifier == c.nullifier)
+            .collect();
+        match anchors.len() {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(HistoryError::Equivocation { index: c.index }),
+        }
+    };
+    let mut anchored = 0;
+    while anchored < certs.len() && anchored_once(&certs[anchored])? {
+        anchored += 1;
+    }
+    for c in &certs[anchored..] {
+        if anchored_once(c)? {
+            return Err(HistoryError::NotAnchored {
+                index: certs[anchored].index,
+            });
+        }
+    }
+    let head = anchored.checked_sub(1).map(|i| &certs[i]);
+    Ok(OwnChain {
+        anchored,
+        dropped: certs[anchored..].iter().map(|c| c.index).collect(),
+        next_index: anchored as u32,
+        successor_on_board: tagged(records, next_tag(identity_pk, head))
+            .next()
+            .is_some(),
+    })
+}
+
 /// Tagged register entries carrying `tag`.
 fn tagged(records: &[BoardRecord], tag: [u8; 32]) -> impl Iterator<Item = &BoardRecord> {
     records.iter().filter(move |r| {
@@ -324,6 +383,57 @@ mod tests {
                 7,
             )
         }
+    }
+
+    #[test]
+    fn the_next_index_comes_from_the_anchored_chain() {
+        let mut w = World::new();
+        let own = |w: &World, certs: &[HistoryCert]| own_chain(certs, &w.id_pk(), &w.records);
+        // empty history: index 0, nothing on the board yet
+        assert_eq!(
+            own(&w, &[]).unwrap(),
+            OwnChain {
+                anchored: 0,
+                dropped: vec![],
+                next_index: 0,
+                successor_on_board: false
+            }
+        );
+        w.deal(50, Some(SETTLED_ON_TIME));
+        w.deal(60, None);
+        let certs = w.certs.clone();
+        let r = own(&w, &certs).unwrap();
+        assert_eq!(
+            (r.anchored, r.next_index, r.successor_on_board),
+            (2, 2, false)
+        );
+
+        // a certificate issued but never registered by the financier is dropped, its index reused
+        let inv = w.invoice(2, 70);
+        let unanchored = HistoryCert::issue(
+            &w.id,
+            2,
+            &inv,
+            key(3).verifying_key().to_bytes(),
+            certs.last(),
+        )
+        .unwrap();
+        let mut with_tail = certs.clone();
+        with_tail.push(unanchored);
+        let r = own(&w, &with_tail).unwrap();
+        assert_eq!(
+            (r.anchored, r.dropped.clone(), r.next_index),
+            (2, vec![2], 2)
+        );
+
+        // the device lost its newest certificate: the board already holds its successor tag
+        let r = own(&w, &certs[..1]).unwrap();
+        assert_eq!((r.next_index, r.successor_on_board), (1, true));
+
+        // a chain that skips an index does not hold together
+        assert!(own(&w, &[certs[1].clone()]).is_err());
+        // another identity's certificates are refused
+        assert!(own_chain(&certs, &key(77).verifying_key().to_bytes(), &w.records).is_err());
     }
 
     fn standard() -> MinimumStandard {
