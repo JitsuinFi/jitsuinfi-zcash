@@ -70,6 +70,8 @@ Register entry, kind `0x01` (136 bytes) or `0x03` (168 bytes, with a buyer histo
 | 72 | `history_tag` (kind `0x03` only) | 32 |
 | 72 / 104 | `sig_supplier` over bytes 1 up to this offset, by `supplier_ephemeral_pk` | 64 |
 
+**Classes.** `discount_bucket` and `tenor_bucket` feed the public rate index. They are `0/0` (not disclosed) unless the supplier opts in: a holder of the invoice can find the entry by `N` and read them. A financier MUST accept an entry whose classes are either the deal's classes or `0/0`, and MUST refuse any other pair.
+
 **Ordering.** Entries are totally ordered by (block height, transaction index in the block, output index). The transaction index is taken from lightwalletd `GetBlock`.
 
 **Lookup.** A holder of the invoice computes `N` and considers the register entries (kinds `0x01` and `0x03`) with that `N` whose `sig_supplier` verifies under `supplier_ephemeral_pk`; all others are ignored (anti-griefing). The first such entry is the registration. A later entry with the *same* `financier_commitment` is a re-post. A later entry with a *different* commitment is double financing.

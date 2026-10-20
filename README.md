@@ -185,6 +185,6 @@ Expected output: [`examples/index/expected-output.txt`](examples/index/expected-
 | 6    | 8-12%                            |                             |
 | 7    | >= 12%                           |                             |
 
-`jitsuin_core::index::classes_for(face, advance, advance_day, due_day)` gives the two codes the supplier signs into the entry. Both are disclosed or neither (`0/0`); other values are counted as invalid and left out.
+`jitsuin_core::index::classes_for(face, advance, advance_day, due_day)` gives the two codes of a deal. Entries are `0/0` (not disclosed) by default: anyone holding the invoice (the buyer, a financier that was shown it) can compute `N` and read that entry's classes, so the supplier opts in before its classes join the index. A financier accepts either the deal's classes or `0/0`. Both are disclosed or neither; other values are counted as invalid and left out.
 
 Status: in development for ZECATHON 2026. Development runs on Zcash testnet (NU7).

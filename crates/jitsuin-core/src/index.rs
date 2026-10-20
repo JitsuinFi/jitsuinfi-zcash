@@ -4,7 +4,9 @@
 //! offsets 70 and 71), never an amount or a party. Anyone holding the board's viewing key can
 //! recompute the index from the board; a class is shown only when at least `k` invoices fall in
 //! it, so the index never singles out one deal. The class of each entry stays readable on the
-//! board itself (Threat Model); the threshold applies to the published aggregate.
+//! board itself (Threat Model); the threshold applies to the published aggregate. Anyone holding
+//! the invoice can compute N and read that entry's classes (W-14), so entries are `0/0` (not
+//! disclosed) by default and the supplier opts in to the index (D-42).
 //!
 //! Classes (vault `07-Architecture/Format Data`, "Bucket indeks"):
 //!

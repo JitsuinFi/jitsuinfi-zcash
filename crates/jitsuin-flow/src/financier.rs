@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, SigningKey};
 use jitsuin_board::{lookup, lwd, proof_from_lookup, scan, BoardRecord, Lookup};
-use jitsuin_core::index::{classes_for, validate_classes};
+use jitsuin_core::index::{classes_for, validate_classes, UNDISCLOSED};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
     commitment_opening, nullifier, verify_invoice, Assignment, BoardEntry, ChainStatus,
@@ -51,8 +51,9 @@ pub struct Deal {
     /// Tag of the buyer's new history certificate (HNK-20). When set, the register entry must
     /// carry it, so the invoice joins the buyer's anchored history.
     pub history_tag: Option<[u8; 32]>,
-    /// Discount and tenor classes the register entry must carry (HNK-08, HNK-27.T2), normally
-    /// from [`deal_classes`]; `0/0` means not disclosed.
+    /// Discount and tenor classes of the deal (HNK-08, HNK-27.T2), normally from [`deal_classes`].
+    /// The register entry carries them only if the supplier opts in to the public index; it may
+    /// always carry `0/0` (not disclosed) instead (D-42, W-14).
     pub discount_bucket: u8,
     pub tenor_bucket: u8,
 }
@@ -594,8 +595,11 @@ impl Flow {
         if self.deal.history_tag.is_some() && entry.history_tag != self.deal.history_tag {
             return Err(Error::EntryMismatch("history tag missing or wrong"));
         }
-        if (entry.discount_bucket, entry.tenor_bucket)
-            != (self.deal.discount_bucket, self.deal.tenor_bucket)
+        // The supplier chooses whether its classes join the public index (D-42, W-14): the entry
+        // carries the deal's classes, or `0/0` (not disclosed). Any other pair would skew the index.
+        let classes = (entry.discount_bucket, entry.tenor_bucket);
+        if classes != (self.deal.discount_bucket, self.deal.tenor_bucket)
+            && classes != (UNDISCLOSED, UNDISCLOSED)
         {
             return Err(Error::EntryMismatch(
                 "discount or tenor class differs from the deal",
@@ -1417,11 +1421,11 @@ mod tests {
     }
 
     #[test]
-    fn entry_classes_must_match_the_deal() {
+    fn entry_classes_are_the_deal_or_undisclosed() {
         let mut flow = Flow::new(deal(1)).unwrap();
         flow.apply(board(&[], 1)).unwrap();
-        // 0/0 (or any other class) when the deal says 2/3 is refused, state unchanged
-        for (d, t) in [(0, 0), (3, 3), (2, 4)] {
+        // any other class when the deal says 2/3 is refused, state unchanged
+        for (d, t) in [(3, 3), (2, 4), (0, 3), (2, 0)] {
             let e = BoardEntry::sign(&supplier(), EntryKind::Register, n(), ours(), d, t);
             assert!(matches!(
                 flow.apply(Event::SupplierSigned(e)),
@@ -1432,6 +1436,12 @@ mod tests {
             assert_eq!(flow.state(), &State::AwaitSupplierSignature);
         }
         flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        assert!(matches!(flow.state(), State::Register { .. }));
+        // the supplier keeps its classes out of the index (default, D-42): 0/0 is accepted
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(&[], 1)).unwrap();
+        let e = BoardEntry::sign(&supplier(), EntryKind::Register, n(), ours(), 0, 0);
+        flow.apply(Event::SupplierSigned(e)).unwrap();
         assert!(matches!(flow.state(), State::Register { .. }));
     }
 
