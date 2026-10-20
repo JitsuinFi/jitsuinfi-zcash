@@ -467,11 +467,40 @@ pub fn supplier_register_entry(
 /// Double-signature proof (base64url) from two register memos for the same invoice, signed by its
 /// supplier for two different financiers, with the buyer's invoice signature. Neither entry needs
 /// to be on chain: the second one may only have been offered.
+#[derive(Deserialize)]
+struct EntryAtJson {
+    txid: String,
+    height: u32,
+    tx_index: u32,
+    output_index: u32,
+}
+
+/// Board position `{txid, height, tx_index, output_index}` as JSON, or `None` / `""` for an entry
+/// that is not on chain.
+fn entry_at(json_text: Option<&str>) -> ApiResult<Option<jitsuin_core::EntryAt>> {
+    let Some(text) = json_text.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    let j: EntryAtJson = serde_json::from_str(text).map_err(err)?;
+    unhex::<32>(&j.txid)?;
+    Ok(Some(jitsuin_core::EntryAt {
+        txid: j.txid.trim().to_lowercase(),
+        height: j.height,
+        tx_index: j.tx_index,
+        output_index: j.output_index,
+    }))
+}
+
+/// `first_at_json` and `second_at_json` are the board positions of the two entries (K-3,
+/// HNK-27.T4). `jitsuin verify` needs the first entry's position; the second may be omitted when
+/// it was only offered.
 pub fn double_sign_proof(
     invoice_b64: &str,
     buyer_signature_hex: &str,
     first_memo_b64: &str,
     second_memo_b64: &str,
+    first_at_json: Option<&str>,
+    second_at_json: Option<&str>,
 ) -> ApiResult<String> {
     let entry = |m: &str| jitsuin_core::BoardEntry::from_memo_bytes(&unb64(m)?).map_err(err);
     let p = DoubleSignProof {
@@ -479,10 +508,15 @@ pub fn double_sign_proof(
         buyer_signature: unhex(buyer_signature_hex)?,
         first: entry(first_memo_b64)?,
         second: entry(second_memo_b64)?,
-        first_at: None,
-        second_at: None,
+        first_at: entry_at(first_at_json)?,
+        second_at: entry_at(second_at_json)?,
     };
     p.verify().map_err(err)?;
+    if let (Some(a), Some(b)) = (&p.first_at, &p.second_at) {
+        if (a.height, a.tx_index, a.output_index) >= (b.height, b.tx_index, b.output_index) {
+            return Err("the first entry must come before the second on the board".into());
+        }
+    }
     Ok(b64(&p.to_bytes().map_err(err)?))
 }
 

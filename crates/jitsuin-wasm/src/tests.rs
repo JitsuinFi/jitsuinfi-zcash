@@ -367,6 +367,8 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
         &sig,
         a["memo"].as_str().unwrap(),
         b["memo"].as_str().unwrap(),
+        None,
+        None,
     )
     .unwrap();
     let r = parse(&api::verify_proof(&proof).unwrap());
@@ -377,9 +379,57 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
         &inv_b64,
         &sig,
         a["memo"].as_str().unwrap(),
-        a["memo"].as_str().unwrap()
+        a["memo"].as_str().unwrap(),
+        None,
+        None,
     )
     .is_err());
+    // with board positions the proof passes the board check that `jitsuin verify` runs
+    let at = |txid: &str, height: u32| {
+        format!(r#"{{"txid":"{txid}","height":{height},"tx_index":1,"output_index":0}}"#)
+    };
+    let (ta, tb) = ("aa".repeat(32), "bb".repeat(32));
+    let positioned = api::double_sign_proof(
+        &inv_b64,
+        &sig,
+        a["memo"].as_str().unwrap(),
+        b["memo"].as_str().unwrap(),
+        Some(&at(&ta, 10)),
+        Some(&at(&tb, 12)),
+    )
+    .unwrap();
+    let p = jitsuin_core::DoubleSignProof::from_bytes(&base64_decode(&positioned)).unwrap();
+    let rec = |txid: &str, height: u32, memo: &str| jitsuin_board::BoardRecord {
+        txid: txid.into(),
+        position: jitsuin_board::Position {
+            height,
+            tx_index: 1,
+            output_index: 0,
+        },
+        entry: jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(memo)).unwrap(),
+    };
+    let board = [
+        rec(&ta, 10, a["memo"].as_str().unwrap()),
+        rec(&tb, 12, b["memo"].as_str().unwrap()),
+    ];
+    assert!(jitsuin_board::verify_proof_on_board(&p, &board));
+    let r = parse(&api::verify_proof(&positioned).unwrap());
+    assert_eq!(r["first_at"]["height"], 10);
+    // without the first position the board check fails, as in `jitsuin verify`
+    let unpositioned = jitsuin_core::DoubleSignProof::from_bytes(&base64_decode(&proof)).unwrap();
+    assert!(!jitsuin_board::verify_proof_on_board(&unpositioned, &board));
+    // positions in the wrong order, or a bad txid, are refused
+    for (fa, fb) in [(at(&ta, 12), at(&tb, 10)), (at("zz", 10), at(&tb, 12))] {
+        assert!(api::double_sign_proof(
+            &inv_b64,
+            &sig,
+            a["memo"].as_str().unwrap(),
+            b["memo"].as_str().unwrap(),
+            Some(&fa),
+            Some(&fb),
+        )
+        .is_err());
+    }
 }
 
 #[test]

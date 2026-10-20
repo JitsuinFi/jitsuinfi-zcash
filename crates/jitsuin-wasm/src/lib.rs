@@ -129,17 +129,23 @@ pub fn supplier_register_entry(
 }
 
 #[wasm_bindgen(js_name = doubleSignProof)]
+/// `first_at` and `second_at`: board positions as JSON `{txid, height, tx_index, output_index}`
+/// (omit for an entry that is not on chain; `jitsuin verify` needs the first one).
 pub fn double_sign_proof(
     invoice_b64: &str,
     buyer_signature_hex: &str,
     first_memo_b64: &str,
     second_memo_b64: &str,
+    first_at: Option<String>,
+    second_at: Option<String>,
 ) -> Result<String, JsError> {
     js(api::double_sign_proof(
         invoice_b64,
         buyer_signature_hex,
         first_memo_b64,
         second_memo_b64,
+        first_at.as_deref(),
+        second_at.as_deref(),
     ))
 }
 
