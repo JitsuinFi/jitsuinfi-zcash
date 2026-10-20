@@ -29,6 +29,14 @@ pub fn document_hash(file: &[u8]) -> String {
     api::document_hash(file)
 }
 
+#[wasm_bindgen(js_name = financierCommitment)]
+pub fn financier_commitment(
+    financier_secret_hex: &str,
+    invoice_b64: &str,
+) -> Result<String, JsError> {
+    js(api::financier_commitment(financier_secret_hex, invoice_b64))
+}
+
 #[wasm_bindgen(js_name = buyerKeys)]
 pub fn buyer_keys(master_hex: &str, index: u32) -> Result<String, JsError> {
     js(api::buyer_keys(master_hex, index))

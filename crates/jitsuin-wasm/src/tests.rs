@@ -344,6 +344,34 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
     .is_err());
 }
 
+#[test]
+fn financier_commitment_is_derived_and_matches_the_supplier_entry() {
+    let inv_b64 = invoice_b64();
+    let secret = "03".repeat(32);
+    let o = parse(&api::financier_commitment(&secret, &inv_b64).unwrap());
+    // asking again (a retry after a crash) gives the same opening
+    assert_eq!(
+        parse(&api::financier_commitment(&secret, &inv_b64).unwrap()),
+        o
+    );
+    let n = jitsuin_core::nullifier(&invoice()).unwrap();
+    let (salt, c) = jitsuin_core::commitment_opening(&key(3), &n);
+    assert_eq!(o["salt"], hex(&salt));
+    assert_eq!(o["commitment"], hex(&c));
+    // the supplier signs an entry for exactly that commitment from the opening
+    let fin = hex(&key(3).verifying_key().to_bytes());
+    let e = parse(
+        &api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin,
+            o["salt"].as_str().unwrap(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(e["commitment"], o["commitment"]);
+}
+
 /// Invoice `index` of `MASTER`'s buyer, supplier key 0x01, due `due`.
 fn history_invoice(index: u32, due: u32) -> String {
     let buyer = BuyerIdentity::from_master_secret([0x42; 32]).invoice_key(index);

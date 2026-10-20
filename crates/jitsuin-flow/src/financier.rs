@@ -15,8 +15,8 @@ use ed25519_dalek::SigningKey;
 use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
-    nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt, ReceiptKind, ReceivableNote,
-    Role, Seal,
+    commitment_opening, nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt,
+    ReceiptKind, ReceivableNote, Role, Seal,
 };
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
@@ -324,6 +324,13 @@ pub struct Financier {
 }
 
 impl Financier {
+    /// Salt and commitment for a deal on `invoice` (P-08): derived from this financier's key and
+    /// N, so a retry after a crash reuses the same commitment. Send the salt with
+    /// `financier_pk` to the supplier; put the commitment in [`Deal::financier_commitment`].
+    pub fn commitment_opening(&self, invoice: &Invoice) -> Result<([u8; 32], [u8; 32]), Error> {
+        Ok(commitment_opening(&self.key, &nullifier(invoice)?))
+    }
+
     /// Scans the board and feeds the lookup to the flow (states `Check` and `AwaitConfirmation`).
     pub fn check<'f>(&self, flow: &'f mut Flow) -> Result<&'f State, Error> {
         let report = scan(&self.board_watch, &self.lightwalletd)?;

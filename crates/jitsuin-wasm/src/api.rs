@@ -375,6 +375,15 @@ fn seals_of(json_text: &str) -> ApiResult<Vec<Seal>> {
 /// Financier seal on the assignment letter, the last of the chain, after checking the supplier's
 /// and the buyer's seals (`seals_json`: their seals as a JSON array of base64url). Sign-to-Pay:
 /// the advance goes out only once this seal exists.
+/// Commitment opening of this financier for the invoice (P-08): `{salt, commitment}`, both hex.
+/// Derived from the financier key and N, so asking again gives the same values.
+pub fn financier_commitment(financier_secret_hex: &str, invoice_b64: &str) -> ApiResult<String> {
+    let inv = invoice(invoice_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(financier_secret_hex)?);
+    let (salt, commitment) = jitsuin_core::commitment_opening(&key, &nullifier(&inv).map_err(err)?);
+    Ok(json!({ "salt": hex(&salt), "commitment": hex(&commitment) }).to_string())
+}
+
 pub fn financier_seal_assignment(
     financier_secret_hex: &str,
     invoice_b64: &str,
