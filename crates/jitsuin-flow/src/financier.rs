@@ -26,6 +26,10 @@ use crate::Error;
 /// Value sent with each board entry; the board only needs the memo.
 pub const ENTRY_POST_ZAT: u64 = 10_000;
 
+/// Blocks after which an unmined advance counts as expired and may be paid again (K-7): the
+/// ZIP-203 default expiry delta of 40 blocks plus a margin of 10.
+pub const ADVANCE_EXPIRY_BLOCKS: u32 = 50;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deal {
     /// The buyer-signed invoice; gives N and the supplier and buyer keys.
@@ -78,8 +82,18 @@ pub enum State {
     Pay {
         entry: BoardRecord,
         assignment_seals: Vec<Seal>,
+        /// Advances sent earlier that expired unmined; never counted as paid again.
+        expired_advances: Vec<String>,
     },
-    /// Advance paid.
+    /// Advance broadcast at `sent_tip`; wait until it is mined (K-7).
+    AwaitAdvanceConfirmation {
+        entry: BoardRecord,
+        assignment_seals: Vec<Seal>,
+        advance_txid: String,
+        sent_tip: u32,
+        expired_advances: Vec<String>,
+    },
+    /// Advance paid and mined.
     Done {
         entry: BoardRecord,
         advance_txid: String,
@@ -97,6 +111,7 @@ impl State {
             State::AwaitConfirmation { .. } => "AwaitConfirmation",
             State::AwaitAssignment { .. } => "AwaitAssignment",
             State::Pay { .. } => "Pay",
+            State::AwaitAdvanceConfirmation { .. } => "AwaitAdvanceConfirmation",
             State::Done { .. } => "Done",
             State::Stopped(_) => "Stopped",
         }
@@ -127,8 +142,15 @@ pub enum Event {
     },
     /// Seals of the assignment letter collected so far (supplier, then buyer).
     AssignmentSealed(Vec<Seal>),
+    /// Advance broadcast (or found already sent), with the chain tip at that time.
     AdvanceSent {
         txid: String,
+        tip_height: u32,
+    },
+    /// Wallet check of the advance: mined or not, and the chain tip.
+    AdvanceChecked {
+        mined: bool,
+        tip_height: u32,
     },
 }
 
@@ -140,6 +162,7 @@ impl Event {
             Event::EntryPosted { .. } => "EntryPosted",
             Event::AssignmentSealed(_) => "AssignmentSealed",
             Event::AdvanceSent { .. } => "AdvanceSent",
+            Event::AdvanceChecked { .. } => "AdvanceChecked",
         }
     }
 }
@@ -216,6 +239,7 @@ impl Flow {
                     } => State::Pay {
                         entry: entry.clone(),
                         assignment_seals: seals,
+                        expired_advances: Vec::new(),
                     },
                     _ => {
                         return Err(Error::InvalidDeal(
@@ -224,10 +248,48 @@ impl Flow {
                     }
                 }
             }
-            (State::Pay { entry, .. }, Event::AdvanceSent { txid }) => State::Done {
+            (
+                State::Pay {
+                    entry,
+                    assignment_seals,
+                    expired_advances,
+                },
+                Event::AdvanceSent { txid, tip_height },
+            ) => State::AwaitAdvanceConfirmation {
                 entry: entry.clone(),
+                assignment_seals: assignment_seals.clone(),
                 advance_txid: txid,
+                sent_tip: tip_height,
+                expired_advances: expired_advances.clone(),
             },
+            (
+                State::AwaitAdvanceConfirmation {
+                    entry,
+                    assignment_seals,
+                    advance_txid,
+                    sent_tip,
+                    expired_advances,
+                },
+                Event::AdvanceChecked { mined, tip_height },
+            ) => {
+                if mined {
+                    State::Done {
+                        entry: entry.clone(),
+                        advance_txid: advance_txid.clone(),
+                    }
+                } else if tip_height > sent_tip.saturating_add(ADVANCE_EXPIRY_BLOCKS) {
+                    // Expired unmined: back to `Pay`; this txid never counts as paid again.
+                    let mut expired = expired_advances.clone();
+                    expired.push(advance_txid.clone());
+                    State::Pay {
+                        entry: entry.clone(),
+                        assignment_seals: assignment_seals.clone(),
+                        expired_advances: expired,
+                    }
+                } else {
+                    self.state.clone()
+                }
+            }
             (state, event) => {
                 return Err(Error::UnexpectedEvent {
                     state: state.name(),
@@ -255,9 +317,32 @@ impl Flow {
                 State::Stopped(Stop::AlreadyFinanced { winner })
             }
             // Ours (posted now or in an earlier attempt). A re-check after confirmation keeps
-            // the state: it only guards against a late double financing or a reorg.
+            // the state while the entry stays where it was; an entry re-mined at another height
+            // is counted again from there (K-7).
             Lookup::Registered { winner, .. } => match &self.state {
-                State::AwaitAssignment { .. } | State::Pay { .. } => self.state.clone(),
+                State::AwaitAssignment { entry } | State::Pay { entry, .. }
+                    if entry.position == winner.position =>
+                {
+                    self.state.clone()
+                }
+                State::AwaitAssignment { .. } | State::Pay { .. }
+                    if confirmations(tip_height, winner.position.height)
+                        < self.deal.min_confirmations =>
+                {
+                    State::AwaitConfirmation {
+                        entry_txid: winner.txid,
+                    }
+                }
+                State::AwaitAssignment { .. } => State::AwaitAssignment { entry: winner },
+                State::Pay {
+                    assignment_seals,
+                    expired_advances,
+                    ..
+                } => State::Pay {
+                    entry: winner,
+                    assignment_seals: assignment_seals.clone(),
+                    expired_advances: expired_advances.clone(),
+                },
                 _ if confirmations(tip_height, winner.position.height)
                     >= self.deal.min_confirmations =>
                 {
@@ -346,8 +431,10 @@ pub fn sent_advance(
     txs: &[WalletTx],
     nullifier: &[u8; 32],
     financier_pk: &[u8; 32],
+    expired: &[String],
 ) -> Option<String> {
     txs.iter()
+        .filter(|tx| !expired.contains(&tx.txid))
         .find(|tx| {
             tx.outputs.iter().filter(|o| !o.received).any(|o| {
                 let Memo::Arbitrary(bytes) = &o.memo else {
@@ -461,7 +548,9 @@ impl Financier {
         }
         // Last look: a late double financing or a reorg moves the flow out of `Pay`.
         let State::Pay {
-            assignment_seals, ..
+            assignment_seals,
+            expired_advances,
+            ..
         } = self.check(flow)?.clone()
         else {
             return Ok(flow.state());
@@ -469,8 +558,14 @@ impl Financier {
         let deal = flow.deal().clone();
         let n = *flow.nullifier();
         self.wallet.sync()?;
-        if let Some(txid) = sent_advance(&self.wallet.list_tx()?, &n, &financier_pk) {
-            return flow.apply(Event::AdvanceSent { txid });
+        if let Some(txid) = sent_advance(
+            &self.wallet.list_tx()?,
+            &n,
+            &financier_pk,
+            &expired_advances,
+        ) {
+            let tip_height = lwd::latest_height(&self.lightwalletd)?;
+            return flow.apply(Event::AdvanceSent { txid, tip_height });
         }
         let receipt = Receipt::sign(&self.key, ReceiptKind::Advance, n, deal.advance_zat, date)?;
         let seal = deal.assignment.seal_next(&self.key, &assignment_seals)?;
@@ -490,7 +585,41 @@ impl Financier {
             amount_zat: deal.advance_zat,
             memo: Some(PaymentMemo::Arbitrary(memo)),
         }])?;
-        flow.apply(Event::AdvanceSent { txid })
+        let tip_height = lwd::latest_height(&self.lightwalletd)?;
+        flow.apply(Event::AdvanceSent { txid, tip_height })
+    }
+
+    /// Checks the advance in this wallet until it is mined (`Done`), or it expires unmined and
+    /// the flow goes back to `Pay` for one new payment (state `AwaitAdvanceConfirmation`, K-7).
+    pub fn wait_for_advance<'f>(
+        &self,
+        flow: &'f mut Flow,
+        poll: Duration,
+        timeout: Duration,
+    ) -> Result<&'f State, Error> {
+        let started = Instant::now();
+        loop {
+            let State::AwaitAdvanceConfirmation { advance_txid, .. } = flow.state().clone() else {
+                return Err(unexpected(flow, "wait_for_advance"));
+            };
+            self.wallet.sync()?;
+            let mined = self
+                .wallet
+                .list_tx()?
+                .iter()
+                .any(|tx| tx.txid == advance_txid && tx.mined_height.is_some());
+            let tip_height = lwd::latest_height(&self.lightwalletd)?;
+            if !matches!(
+                flow.apply(Event::AdvanceChecked { mined, tip_height })?,
+                State::AwaitAdvanceConfirmation { .. }
+            ) {
+                return Ok(flow.state());
+            }
+            if started.elapsed() >= timeout {
+                return Err(Error::Timeout("advance not mined"));
+            }
+            thread::sleep(poll);
+        }
     }
 }
 
@@ -634,7 +763,10 @@ mod tests {
         assert!(matches!(flow.state(), State::AwaitConfirmation { .. }));
         // an advance cannot be recorded before confirmation
         assert!(matches!(
-            flow.apply(Event::AdvanceSent { txid: "x".into() }),
+            flow.apply(Event::AdvanceSent {
+                txid: "x".into(),
+                tip_height: 101
+            }),
             Err(Error::UnexpectedEvent { .. })
         ));
         flow.apply(board(&[grief.clone(), mine.clone()], 102))
@@ -647,7 +779,10 @@ mod tests {
         );
         // confirmed is not enough: no advance without the sealed letter
         assert!(matches!(
-            flow.apply(Event::AdvanceSent { txid: "x".into() }),
+            flow.apply(Event::AdvanceSent {
+                txid: "x".into(),
+                tip_height: 102
+            }),
             Err(Error::UnexpectedEvent { .. })
         ));
         flow.apply(Event::AssignmentSealed(seals())).unwrap();
@@ -655,14 +790,38 @@ mod tests {
             flow.state(),
             &State::Pay {
                 entry: mine.clone(),
-                assignment_seals: seals()
+                assignment_seals: seals(),
+                expired_advances: vec![],
             }
         );
         // the last look before paying keeps the state
         flow.apply(board(&[grief, mine.clone()], 103)).unwrap();
         assert!(matches!(flow.state(), State::Pay { .. }));
 
-        flow.apply(Event::AdvanceSent { txid: "a".into() }).unwrap();
+        flow.apply(Event::AdvanceSent {
+            txid: "a".into(),
+            tip_height: 103,
+        })
+        .unwrap();
+        // broadcast is not paid: wait until the advance is mined
+        assert!(matches!(
+            flow.state(),
+            State::AwaitAdvanceConfirmation { .. }
+        ));
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 104,
+        })
+        .unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::AwaitAdvanceConfirmation { .. }
+        ));
+        flow.apply(Event::AdvanceChecked {
+            mined: true,
+            tip_height: 105,
+        })
+        .unwrap();
         assert_eq!(
             flow.state(),
             &State::Done {
@@ -670,6 +829,68 @@ mod tests {
                 advance_txid: "a".into()
             }
         );
+    }
+
+    #[test]
+    fn an_expired_advance_is_paid_again_once() {
+        let mine = record("e", 20, entry(ours()));
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(std::slice::from_ref(&mine), 20)).unwrap();
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        flow.apply(Event::AdvanceSent {
+            txid: "a1".into(),
+            tip_height: 30,
+        })
+        .unwrap();
+        // still within the expiry window
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 30 + ADVANCE_EXPIRY_BLOCKS,
+        })
+        .unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::AwaitAdvanceConfirmation { .. }
+        ));
+        // expired unmined: back to Pay, and a1 never counts as paid again
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 31 + ADVANCE_EXPIRY_BLOCKS,
+        })
+        .unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::Pay {
+                entry: mine,
+                assignment_seals: seals(),
+                expired_advances: vec!["a1".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn a_re_mined_entry_is_counted_again() {
+        let mut d = deal(3);
+        d.min_confirmations = 3;
+        let mut flow = Flow::new(d).unwrap();
+        let mine = record("e", 20, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&mine), 22)).unwrap();
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        assert!(matches!(flow.state(), State::Pay { .. }));
+        // a reorg re-mines our entry at 24: only 1 confirmation at tip 24, 3 required
+        let moved = record("e", 24, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&moved), 24)).unwrap();
+        assert_eq!(
+            flow.state(),
+            &State::AwaitConfirmation {
+                entry_txid: "e".into()
+            }
+        );
+        // re-mined but already deep enough: stay in AwaitAssignment with the new position
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(std::slice::from_ref(&mine), 22)).unwrap();
+        flow.apply(board(std::slice::from_ref(&moved), 30)).unwrap();
+        assert_eq!(flow.state(), &State::AwaitAssignment { entry: moved });
     }
 
     #[test]
@@ -736,7 +957,10 @@ mod tests {
             Event::SupplierSigned(entry(ours())),
             Event::EntryPosted { txid: "e".into() },
             Event::AssignmentSealed(seals()),
-            Event::AdvanceSent { txid: "a".into() },
+            Event::AdvanceSent {
+                txid: "a".into(),
+                tip_height: 61,
+            },
             board(&[], 61),
         ] {
             assert!(flow.apply(event).is_err());
@@ -967,10 +1191,15 @@ mod tests {
             tx("sent", out(false, memo)),
             tx("legacy", out(false, receipt.to_memo_bytes().to_vec())),
         ];
-        assert_eq!(sent_advance(&txs, &n(), &pk).as_deref(), Some("sent"));
-        assert_eq!(sent_advance(&txs[..2], &n(), &pk), None);
+        assert_eq!(sent_advance(&txs, &n(), &pk, &[]).as_deref(), Some("sent"));
+        assert_eq!(sent_advance(&txs[..2], &n(), &pk, &[]), None);
         assert_eq!(
-            sent_advance(&txs[3..], &n(), &pk).as_deref(),
+            sent_advance(&txs[3..], &n(), &pk, &[]).as_deref(),
+            Some("legacy")
+        );
+        // an advance that expired unmined is not counted as sent
+        assert_eq!(
+            sent_advance(&txs, &n(), &pk, &["sent".into()]).as_deref(),
             Some("legacy")
         );
     }
