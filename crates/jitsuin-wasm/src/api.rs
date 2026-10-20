@@ -422,8 +422,6 @@ pub fn assignment_status(
         .to_string())
 }
 
-/// Register entry for the board (memo, base64url), signed with the supplier's key of this invoice,
-/// committing to one financier: `BLAKE2b-256(financier_pk ‖ salt)`. Also returns the commitment.
 /// Discount and tenor classes for an entry: both given and valid, or both absent (`0/0`, not
 /// disclosed).
 fn entry_classes(discount: Option<u8>, tenor: Option<u8>) -> ApiResult<(u8, u8)> {
@@ -436,6 +434,9 @@ fn entry_classes(discount: Option<u8>, tenor: Option<u8>) -> ApiResult<(u8, u8)>
     Ok((d, t))
 }
 
+/// Register entry for the board (memo, base64url), signed with the supplier's key of this invoice,
+/// committing to one financier: `BLAKE2b-256(financier_pk ‖ salt)`. Also returns the commitment.
+/// `discount` and `tenor` are the deal's classes from the financier (both or neither).
 pub fn supplier_register_entry(
     supplier_secret_hex: &str,
     invoice_b64: &str,
