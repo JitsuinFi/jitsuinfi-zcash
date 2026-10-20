@@ -57,6 +57,10 @@ pub enum Error {
     NonZeroPadding,
     /// Discount or tenor class is not defined, or only one of the two is disclosed (HNK-08).
     InvalidBucket,
+    /// A mailbox key, or a key in a challenge or a sealed message, is low order or malformed.
+    InvalidMailboxKey,
+    /// A sealed message is too short, tampered with, or not for this mailbox (HNK-23.T2).
+    SealedMessage,
 }
 
 impl fmt::Display for Error {
@@ -89,6 +93,8 @@ impl fmt::Display for Error {
             Error::TrailingBytes => write!(f, "unexpected trailing bytes"),
             Error::NonZeroPadding => write!(f, "memo padding is not zero"),
             Error::InvalidBucket => write!(f, "discount/tenor class is not defined"),
+            Error::InvalidMailboxKey => write!(f, "not a usable X25519 mailbox key"),
+            Error::SealedMessage => write!(f, "sealed message does not open with this mailbox key"),
         }
     }
 }

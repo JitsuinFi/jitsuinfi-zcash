@@ -14,6 +14,7 @@ pub mod history;
 pub mod index;
 pub mod invoice;
 pub mod keys;
+pub mod mailbox;
 pub mod memo;
 pub mod nullifier;
 pub mod proof;

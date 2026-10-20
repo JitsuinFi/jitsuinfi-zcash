@@ -804,3 +804,45 @@ fn proofs_and_the_rate_index_are_checked_against_board_data_as_in_the_cli() {
     );
     assert!(api::rate_index("not json", 5).is_err());
 }
+
+#[test]
+fn mailbox_keys_proof_and_sealed_messages_through_the_api() {
+    // same vector as jitsuin-core mailbox.rs and jitsuinfi-backend tests/vectors.test.ts
+    let prf = hex(&[0x11; 32]);
+    let k: Value = serde_json::from_str(&api::mailbox_keys(&prf).unwrap()).unwrap();
+    assert_eq!(
+        k["mailbox_pk"],
+        "721e61a2e3a16f2e7806c392b1367c8edb7c11c0132d2b5d3164290d60fce400"
+    );
+    assert_eq!(
+        k["mailbox_id"],
+        "171e3bf4c1a8af89725083cc6ceac9bb9400ebcf9caac626f1b6779e667559c2"
+    );
+    let proof = api::mailbox_proof(
+        &prf,
+        "register",
+        "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
+        &hex(&[0x33; 32]),
+    )
+    .unwrap();
+    assert_eq!(
+        proof,
+        "7d4a818d24e88f5a20279120ae3dad9e64409b7f9b0de59b415ce565ef84f7a2"
+    );
+    assert!(api::mailbox_proof(&prf, "write", &hex(&[9; 32]), &hex(&[0; 32])).is_err());
+
+    // seal to the mailbox, open with the same PRF output; the ephemeral secret is wiped
+    let mut eph = [5u8; 32];
+    let sealed = api::mailbox_seal(
+        k["mailbox_pk"].as_str().unwrap(),
+        &mut eph,
+        b"JTSM document",
+    )
+    .unwrap();
+    assert_eq!(eph, [0; 32]);
+    assert_eq!(api::mailbox_open(&prf, &sealed).unwrap(), b"JTSM document");
+    assert!(api::mailbox_open(&hex(&[0x12; 32]), &sealed).is_err());
+    let mut short = [5u8; 16];
+    assert!(api::mailbox_seal(k["mailbox_pk"].as_str().unwrap(), &mut short, b"x").is_err());
+    assert_eq!(short, [0; 16]);
+}
