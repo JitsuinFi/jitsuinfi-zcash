@@ -8,12 +8,19 @@
 
 use ed25519_dalek::SigningKey;
 use jitsuin_board::{lwd, scan, settled};
-use jitsuin_core::{ReceiptKind, Seal, SettledEntry, SettlementDoc, SETTLED_LATE, SETTLED_ON_TIME};
+use jitsuin_core::{
+    Receipt, ReceiptKind, Seal, SettledEntry, SettlementDoc, SETTLED_LATE, SETTLED_ON_TIME,
+};
 use jitsuin_wallet::{Payment, PaymentMemo, WalletTx};
 
+use crate::codec::{Reader, Writer};
 use crate::financier::{Financier, ENTRY_POST_ZAT};
-use crate::receipts::{received, ReceivedReceipt};
+use crate::receipts::{received, verdict, ReceivedReceipt};
 use crate::Error;
+
+/// Magic and version of a repayment evidence file ([`Evidence::to_bytes`]).
+pub const EVIDENCE_MAGIC: &[u8; 4] = b"JTSE";
+pub const EVIDENCE_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -146,6 +153,185 @@ pub fn settle(
     )?)
 }
 
+/// One repayment output for N as the financier's wallet saw it, valid or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidencePayment {
+    pub txid: String,
+    pub mined_height: Option<u32>,
+    pub output_index: u32,
+    pub received_zat: u64,
+    pub receipt: Receipt,
+}
+
+/// The repayment of one invoice as the financier exports it when it is claimed, disputed or
+/// overdue (HNK-26.T13): the settlement document, the buyer's signed claims "I paid", and every
+/// repayment output for N with its txid and buyer-signed receipt. Whoever holds the file checks
+/// the signatures with the buyer's key and recomputes the status from its contents
+/// ([`Evidence::check`]), so the file cannot state a status of its own. The txids point to the
+/// outputs on chain for anyone the financier shows its viewing key. Output values and heights
+/// are the financier's reading of its wallet, signed by nobody: only that viewing key confirms
+/// them, and only the wallet shows that a payment is missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evidence {
+    pub doc: SettlementDoc,
+    /// The buyer's key from the invoice.
+    pub buyer_pk: [u8; 32],
+    /// Day the evidence was made and the grace period after the due date; they fix the status.
+    pub today: u32,
+    pub grace_days: u32,
+    /// The buyer's claims on `doc`, each verified.
+    pub claims: Vec<Seal>,
+    /// Valid repayments first, then rejected ones, each in wallet order.
+    pub payments: Vec<EvidencePayment>,
+}
+
+impl Evidence {
+    pub fn new(
+        doc: &SettlementDoc,
+        buyer_pk: &[u8; 32],
+        repayment: &Repayment,
+        today: u32,
+        grace_days: u32,
+    ) -> Self {
+        let payments = repayment
+            .payments
+            .iter()
+            .chain(&repayment.rejected)
+            .map(|p| EvidencePayment {
+                txid: p.txid.clone(),
+                mined_height: p.mined_height,
+                output_index: p.output_index,
+                received_zat: p.received_zat,
+                receipt: p.receipt.clone(),
+            })
+            .collect();
+        Evidence {
+            doc: *doc,
+            buyer_pk: *buyer_pk,
+            today,
+            grace_days,
+            claims: repayment.claims.clone(),
+            payments,
+        }
+    }
+
+    /// Checks every claim and receipt again and recomputes the repayment and its status, as
+    /// [`repayment`] and [`Repayment::status`] do on the wallet.
+    pub fn check(&self) -> Result<(Repayment, Status), Error> {
+        for c in &self.claims {
+            self.doc.verify_claim(c, &self.buyer_pk)?;
+        }
+        let mut payments = Vec::new();
+        let mut rejected = Vec::new();
+        for p in &self.payments {
+            if p.receipt.kind != ReceiptKind::Repayment || p.receipt.nullifier != self.doc.nullifier
+            {
+                return Err(Error::Format("receipt is not a repayment of this invoice"));
+            }
+            let r = ReceivedReceipt {
+                txid: p.txid.clone(),
+                mined_height: p.mined_height,
+                output_index: p.output_index,
+                received_zat: p.received_zat,
+                receipt: p.receipt.clone(),
+                verdict: verdict(&p.receipt, p.received_zat, &self.buyer_pk),
+                seals: Vec::new(),
+            };
+            if r.is_valid() {
+                payments.push(r);
+            } else {
+                rejected.push(r);
+            }
+        }
+        let sum = |mined: bool| {
+            payments
+                .iter()
+                .filter(|p| p.mined_height.is_some() == mined)
+                .map(|p| p.received_zat)
+                .sum()
+        };
+        let repayment = Repayment {
+            due_zat: self.doc.amount_zat,
+            paid_zat: sum(true),
+            pending_zat: sum(false),
+            payments,
+            rejected,
+            claims: self.claims.clone(),
+        };
+        let status = repayment.status(&self.doc, self.today, self.grace_days);
+        Ok((repayment, status))
+    }
+
+    /// Evidence file, format `JTSE` v1; the console offers it for download.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut w = Writer::default();
+        w.raw(EVIDENCE_MAGIC);
+        w.byte(EVIDENCE_VERSION);
+        w.bytes(&self.doc.to_canonical_bytes())?;
+        w.raw(&self.buyer_pk);
+        w.u32(self.today);
+        w.u32(self.grace_days);
+        w.seals(&self.claims)?;
+        let n =
+            u16::try_from(self.payments.len()).map_err(|_| Error::Format("too many payments"))?;
+        w.raw(&n.to_le_bytes());
+        for p in &self.payments {
+            w.str(&p.txid)?;
+            match p.mined_height {
+                None => w.byte(0),
+                Some(h) => {
+                    w.byte(1);
+                    w.u32(h);
+                }
+            }
+            w.u32(p.output_index);
+            w.u64(p.received_zat);
+            w.receipt(&p.receipt);
+        }
+        Ok(w.out)
+    }
+
+    /// Strict decoder. Does not verify; call [`Evidence::check`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes);
+        if r.take(4)? != EVIDENCE_MAGIC {
+            return Err(Error::Format("not a repayment evidence file"));
+        }
+        if r.byte()? != EVIDENCE_VERSION {
+            return Err(Error::Format("unsupported evidence version"));
+        }
+        let doc = SettlementDoc::from_canonical_bytes(r.bytes()?)?;
+        let buyer_pk = r.array()?;
+        let today = r.u32()?;
+        let grace_days = r.u32()?;
+        let claims = r.seals()?;
+        let n = u16::from_le_bytes(r.array()?);
+        let mut payments = Vec::with_capacity(usize::from(n));
+        for _ in 0..n {
+            payments.push(EvidencePayment {
+                txid: r.str()?,
+                mined_height: match r.byte()? {
+                    0 => None,
+                    1 => Some(r.u32()?),
+                    _ => return Err(Error::Format("malformed evidence file")),
+                },
+                output_index: r.u32()?,
+                received_zat: r.u64()?,
+                receipt: r.receipt()?,
+            });
+        }
+        r.finish()?;
+        Ok(Evidence {
+            doc,
+            buyer_pk,
+            today,
+            grace_days,
+            claims,
+            payments,
+        })
+    }
+}
+
 impl Financier {
     /// Syncs the financier wallet (memos included) and matches the repayment.
     pub fn repayment(&self, doc: &SettlementDoc, buyer_pk: &[u8; 32]) -> Result<Repayment, Error> {
@@ -268,6 +454,79 @@ mod tests {
             settle(&key(3), &doc(), &pk, &r, 99),
             Err(Error::NotSettled { .. })
         ));
+    }
+
+    #[test]
+    fn evidence_recomputes_the_status_from_signed_contents() {
+        let pk = key(2).verifying_key().to_bytes();
+        // the buyer claims 50_000 and sends 1_000; a forged receipt arrives too
+        let lie = tx("lie", Some(10), 1_000, true, pay(&key(2), 50_000));
+        let forged = tx("f", Some(9), 50_000, true, pay(&key(5), 50_000));
+        let r = repayment(&[lie, forged], &doc(), &pk);
+
+        let disputed = Evidence::new(&doc(), &pk, &r, 108, 7);
+        let bytes = disputed.to_bytes().unwrap();
+        assert_eq!(&bytes[..4], EVIDENCE_MAGIC);
+        let back = Evidence::from_bytes(&bytes).unwrap();
+        assert_eq!(back, disputed);
+        let (rep, status) = back.check().unwrap();
+        assert_eq!(status, Status::Disputed);
+        assert_eq!((rep.paid_zat, rep.claims.len()), (0, 1));
+        assert_eq!((rep.payments.len(), rep.rejected.len()), (0, 2));
+        assert_eq!(back.payments[0].txid, "lie");
+        // the same file within the grace period: Claimed
+        let claimed = Evidence::new(&doc(), &pk, &r, 105, 7);
+        assert_eq!(claimed.check().unwrap().1, Status::Claimed);
+        // no claim and no payment after the due date: Overdue
+        let none = repayment(&[], &doc(), &pk);
+        let overdue = Evidence::new(&doc(), &pk, &none, 101, 7);
+        assert_eq!(
+            Evidence::from_bytes(&overdue.to_bytes().unwrap())
+                .unwrap()
+                .check()
+                .unwrap()
+                .1,
+            Status::Overdue
+        );
+    }
+
+    #[test]
+    fn edited_evidence_is_refused() {
+        let pk = key(2).verifying_key().to_bytes();
+        let lie = tx("lie", Some(10), 1_000, true, pay(&key(2), 50_000));
+        let r = repayment(std::slice::from_ref(&lie), &doc(), &pk);
+        let good = Evidence::new(&doc(), &pk, &r, 108, 7);
+
+        // a claim by another key
+        let mut other_claim = good.clone();
+        other_claim.claims = vec![doc().buyer_seal(&key(5))];
+        assert!(other_claim.check().is_err());
+        // a receipt for another invoice
+        let mut other_n = good.clone();
+        other_n.payments[0].receipt =
+            Receipt::sign(&key(2), ReceiptKind::Repayment, [8; 32], 50_000, 99).unwrap();
+        assert!(other_n.check().is_err());
+        // an advance receipt in place of a repayment
+        let mut advance = good.clone();
+        advance.payments[0].receipt =
+            Receipt::sign(&key(2), ReceiptKind::Advance, doc().nullifier, 50_000, 99).unwrap();
+        assert!(advance.check().is_err());
+        // a changed receipt amount breaks the buyer's signature: never counted
+        let mut amount = good.clone();
+        amount.payments[0].receipt.amount_zat = 1_000;
+        assert_eq!(amount.check().unwrap().0.paid_zat, 0);
+
+        let bytes = good.to_bytes().unwrap();
+        let mut bad = bytes.clone();
+        bad[0] = b'X';
+        assert!(matches!(Evidence::from_bytes(&bad), Err(Error::Format(_))));
+        let mut bad = bytes.clone();
+        bad[4] = 2;
+        assert!(matches!(Evidence::from_bytes(&bad), Err(Error::Format(_))));
+        let mut bad = bytes.clone();
+        bad.push(0);
+        assert!(matches!(Evidence::from_bytes(&bad), Err(Error::Format(_))));
+        assert!(Evidence::from_bytes(&bytes[..bytes.len() - 1]).is_err());
     }
 
     #[test]
