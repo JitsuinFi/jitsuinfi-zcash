@@ -26,6 +26,7 @@ const TESTNET_BOARD: &str = "examples/testnet/board-snapshot.json";
 const TESTNET_PROOF: &str = "examples/testnet/proof-tes-inv-0003.txt";
 const TESTNET_EXPECTED: &str = "examples/testnet/expected-output.txt";
 const TESTNET_UFVK: &str = "examples/testnet/board-ufvk.txt";
+const TESTNET_INDEX_EXPECTED: &str = "examples/testnet/expected-index.txt";
 /// 2026-10-19 in days since the Unix epoch.
 const TODAY: u32 = 20_745;
 
@@ -448,6 +449,13 @@ fn published_testnet_board_and_proof_still_verify() {
     assert!(out.contains("on the board at 4509299/2/0"));
     assert!(out.contains("on the board at 4509521/3/0"));
     assert!(out.contains("=> DOUBLE FINANCING PROVEN"));
+    let (code, out, err) = jitsuin(&["index", "--board", TESTNET_BOARD]);
+    if regen() {
+        std::fs::write(root().join(TESTNET_INDEX_EXPECTED), &out).unwrap();
+    }
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(out, read(TESTNET_INDEX_EXPECTED));
+    assert!(out.contains("6 invoices"));
     let ufvk = read(TESTNET_UFVK);
     assert_eq!(
         jitsuin_cli::args::Network::of_ufvk(ufvk.trim()),
