@@ -56,7 +56,6 @@ pub struct FundView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SolvencyPolicy {
-    pub grace_days: u32,
     /// Share of an overdue receivable written off, in percent (100 = counted as zero).
     pub overdue_haircut_pct: u64,
 }
@@ -322,7 +321,6 @@ mod tests {
 
     fn policy() -> SolvencyPolicy {
         SolvencyPolicy {
-            grace_days: 7,
             overdue_haircut_pct: 100,
         }
     }
@@ -389,7 +387,6 @@ mod tests {
         // with half the overdue counted, still short
         let half = SolvencyPolicy {
             overdue_haircut_pct: 50,
-            ..policy()
         };
         assert_eq!(solvency(&v, &half).unwrap().assets_zat, 145_000);
         let rich = fund_view(&txs, 120_000, &pk, 40, 7);
