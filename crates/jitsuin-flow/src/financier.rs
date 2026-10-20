@@ -11,13 +11,13 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ed25519_dalek::SigningKey;
-use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
+use ed25519_dalek::{Signature, SigningKey};
+use jitsuin_board::{lookup, lwd, proof_from_lookup, scan, BoardRecord, Lookup};
 use jitsuin_core::index::{classes_for, validate_classes};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
-    commitment_opening, nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt,
-    ReceiptKind, ReceivableNote, Role, Seal,
+    commitment_opening, nullifier, verify_invoice, Assignment, BoardEntry, ChainStatus,
+    DoubleSignProof, Invoice, Receipt, ReceiptKind, ReceivableNote, Role, Seal,
 };
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
@@ -209,6 +209,34 @@ impl Flow {
 
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    /// Double-signature proof of a deal stopped as double financed (HNK-26.T14): the first entry
+    /// and the first conflicting one, both with their board positions, so `jitsuin verify` and
+    /// the Verify page can check it against the board. `buyer_signature` is the buyer's
+    /// signature on the deal's invoice; the deal does not keep it. `None` in any other state.
+    pub fn double_sign_proof(
+        &self,
+        buyer_signature: [u8; 64],
+    ) -> Result<Option<DoubleSignProof>, Error> {
+        let State::Stopped(Stop::DoubleFinanced {
+            winner,
+            conflicting,
+        }) = &self.state
+        else {
+            return Ok(None);
+        };
+        verify_invoice(&self.deal.invoice, &Signature::from_bytes(&buyer_signature))?;
+        let lookup = Lookup::DoubleFinanced {
+            winner: winner.clone(),
+            conflicting: conflicting.clone(),
+            ignored_invalid: Vec::new(),
+        };
+        let proof = proof_from_lookup(&lookup, &self.deal.invoice, buyer_signature).ok_or(
+            Error::InvalidDeal("double financing without a conflicting entry"),
+        )?;
+        proof.verify()?;
+        Ok(Some(proof))
     }
 
     /// Applies one event. On error the state is unchanged.
@@ -633,8 +661,8 @@ fn unexpected(flow: &Flow, event: &'static str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jitsuin_board::Position;
-    use jitsuin_core::{financier_commitment, EntryKind};
+    use jitsuin_board::{verify_proof_on_board, Position};
+    use jitsuin_core::{financier_commitment, sign_invoice, EntryKind};
     use jitsuin_wallet::TxOutput;
 
     fn key(b: u8) -> SigningKey {
@@ -985,6 +1013,48 @@ mod tests {
                 conflicting: vec![mine],
             })
         );
+    }
+
+    #[test]
+    fn a_double_financed_deal_gives_a_proof_that_holds_on_the_board() {
+        let mut flow = Flow::new(deal(1)).unwrap();
+        let buyer_signature = sign_invoice(&buyer(), &invoice()).unwrap().to_bytes();
+        flow.apply(board(&[], 10)).unwrap();
+        assert_eq!(flow.double_sign_proof(buyer_signature).unwrap(), None);
+
+        flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        let (o, e) = ("0f".repeat(32), "0e".repeat(32));
+        flow.apply(Event::EntryPosted { txid: e.clone() }).unwrap();
+        let other = record(&o, 11, entry([0xEE; 32]));
+        let mine = record(&e, 12, entry(ours()));
+        let records = [other.clone(), mine.clone()];
+        flow.apply(board(&records, 12)).unwrap();
+
+        let proof = flow.double_sign_proof(buyer_signature).unwrap().unwrap();
+        assert_eq!(proof.first, other.entry);
+        assert_eq!(proof.second, mine.entry);
+        assert_eq!(proof.second_at.as_ref().unwrap().txid, e);
+        assert!(verify_proof_on_board(&proof, &records));
+        let bytes = proof.to_bytes().unwrap();
+        assert_eq!(DoubleSignProof::from_bytes(&bytes).unwrap(), proof);
+
+        // only the buyer's signature on this invoice is accepted
+        let mut forged = buyer_signature;
+        forged[0] ^= 1;
+        assert!(flow.double_sign_proof(forged).is_err());
+    }
+
+    #[test]
+    fn already_financed_gives_no_proof() {
+        let mut flow = Flow::new(deal(1)).unwrap();
+        let other = record("o", 11, entry([0xEE; 32]));
+        flow.apply(board(std::slice::from_ref(&other), 11)).unwrap();
+        assert!(matches!(
+            flow.state(),
+            State::Stopped(Stop::AlreadyFinanced { .. })
+        ));
+        let buyer_signature = sign_invoice(&buyer(), &invoice()).unwrap().to_bytes();
+        assert_eq!(flow.double_sign_proof(buyer_signature).unwrap(), None);
     }
 
     #[test]
