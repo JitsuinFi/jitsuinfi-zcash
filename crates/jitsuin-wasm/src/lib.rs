@@ -503,3 +503,55 @@ pub fn supplier_invoice_secret_bytes(
 pub fn storage_keys_bytes(master: &mut [u8]) -> Result<Vec<u8>, JsError> {
     js(api::with_secret(master, api::storage_keys))
 }
+
+/// Mailbox key and id (HNK-23.T2) from the passkey's second PRF output, which is wiped.
+#[wasm_bindgen(js_name = mailboxKeysBytes)]
+pub fn mailbox_keys_bytes(prf_second: &mut [u8]) -> Result<String, JsError> {
+    js(api::with_secret(prf_second, api::mailbox_keys))
+}
+
+/// Answer to a relay challenge; the PRF output is wiped.
+#[wasm_bindgen(js_name = mailboxProofBytes)]
+pub fn mailbox_proof_bytes(
+    prf_second: &mut [u8],
+    purpose: &str,
+    eph_pk_hex: &str,
+    nonce_hex: &str,
+) -> Result<String, JsError> {
+    js(api::with_secret(prf_second, |p| {
+        api::mailbox_proof(p, purpose, eph_pk_hex, nonce_hex)
+    }))
+}
+
+/// Opens a sealed message for this mailbox; the PRF output is wiped.
+#[wasm_bindgen(js_name = mailboxOpenBytes)]
+pub fn mailbox_open_bytes(prf_second: &mut [u8], sealed: &[u8]) -> Result<Vec<u8>, JsError> {
+    js(api::with_secret(prf_second, |p| {
+        api::mailbox_open(p, sealed)
+    }))
+}
+
+/// Seals a message to a recipient's `mailbox_pk`. `eph_secret` is 32 fresh random bytes
+/// (`crypto.getRandomValues`), used once and wiped.
+#[wasm_bindgen(js_name = mailboxSeal)]
+pub fn mailbox_seal(
+    recipient_pk_hex: &str,
+    eph_secret: &mut [u8],
+    message: &[u8],
+) -> Result<Vec<u8>, JsError> {
+    js(api::mailbox_seal(recipient_pk_hex, eph_secret, message))
+}
+
+/// `mailbox_id` of a recipient's `mailbox_pk`.
+#[wasm_bindgen(js_name = mailboxId)]
+pub fn mailbox_id(mailbox_pk_hex: &str) -> Result<String, JsError> {
+    js(api::mailbox_id_of(mailbox_pk_hex))
+}
+
+/// Signs a relay message header's signing bytes with a party key (wiped); refuses any other bytes.
+#[wasm_bindgen(js_name = messageSignBytes)]
+pub fn message_sign_bytes(secret: &mut [u8], signing_bytes: &[u8]) -> Result<String, JsError> {
+    js(api::with_secret(secret, |s| {
+        api::message_sign(s, signing_bytes)
+    }))
+}

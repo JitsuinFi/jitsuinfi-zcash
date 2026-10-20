@@ -905,3 +905,82 @@ pub fn financier_settle(
         .map_err(err)?;
     Ok(json!({ "memo": b64(&e.to_memo_bytes()), "on_time": on_time }).to_string())
 }
+
+// ---------- mailboxes (HNK-23.T2) ----------
+
+fn prf_key(prf_hex: &str) -> ApiResult<jitsuin_core::mailbox::MailboxKeys> {
+    let mut prf = unhex::<32>(prf_hex)?;
+    let k = jitsuin_core::mailbox::MailboxKeys::from_prf(&prf);
+    wipe(&mut prf);
+    Ok(k)
+}
+
+/// The mailbox key and id from the passkey's second PRF output (hex).
+pub fn mailbox_keys(prf_hex: &str) -> ApiResult<String> {
+    let k = prf_key(prf_hex)?;
+    Ok(json!({ "mailbox_pk": hex(&k.public()), "mailbox_id": hex(&k.id()) }).to_string())
+}
+
+/// Answer (hex) to a relay challenge `{purpose, eph_pk, nonce}`.
+pub fn mailbox_proof(
+    prf_hex: &str,
+    purpose: &str,
+    eph_pk_hex: &str,
+    nonce_hex: &str,
+) -> ApiResult<String> {
+    let purpose = jitsuin_core::mailbox::Purpose::parse(purpose)
+        .map_err(|_| "purpose must be \"register\" or \"read\"".to_string())?;
+    let k = prf_key(prf_hex)?;
+    Ok(hex(&k
+        .proof(purpose, &unhex::<32>(eph_pk_hex)?, &unhex::<32>(nonce_hex)?)
+        .map_err(err)?))
+}
+
+/// Opens a message sealed to this mailbox.
+pub fn mailbox_open(prf_hex: &str, sealed: &[u8]) -> ApiResult<Vec<u8>> {
+    prf_key(prf_hex)?.open(sealed).map_err(err)
+}
+
+/// Seals `message` to the recipient's `mailbox_pk` (hex) with a one-time ephemeral secret.
+pub fn mailbox_seal(
+    recipient_pk_hex: &str,
+    eph_secret: &mut [u8],
+    message: &[u8],
+) -> ApiResult<Vec<u8>> {
+    if eph_secret.len() != 32 {
+        wipe(eph_secret);
+        return Err("expected 32 random bytes for the ephemeral key".into());
+    }
+    let mut e = [0u8; 32];
+    e.copy_from_slice(eph_secret);
+    wipe(eph_secret);
+    let r = jitsuin_core::mailbox::seal(&unhex::<32>(recipient_pk_hex)?, &e, message).map_err(err);
+    wipe(&mut e);
+    r
+}
+
+/// `mailbox_id` (hex) of a recipient's `mailbox_pk` (hex), to address a sealed message.
+pub fn mailbox_id_of(mailbox_pk_hex: &str) -> ApiResult<String> {
+    Ok(hex(&jitsuin_core::mailbox::mailbox_id(&unhex::<32>(
+        mailbox_pk_hex,
+    )?)))
+}
+
+/// Domain tag every relay message signature starts with (jitsuinfi-frontend relay-message.ts).
+const MESSAGE_SIG_DOMAIN: &[u8] = b"JitsuinMsgSig_v1\n";
+
+/// Signs the signing bytes of a relay message header (HNK-23.T7) with a party key, here the
+/// supplier's per-invoice key, without the key leaving wasm. Only bytes that start with the
+/// message domain tag are signed, so the key cannot be made to sign anything else (an invoice, a
+/// seal or a board entry). Returns the public key and the signature (hex).
+pub fn message_sign(secret_hex: &str, signing_bytes: &[u8]) -> ApiResult<String> {
+    if !signing_bytes.starts_with(MESSAGE_SIG_DOMAIN) {
+        return Err("only relay message headers are signed here".into());
+    }
+    let key = SigningKey::from_bytes(&unhex::<32>(secret_hex)?);
+    let sig = ed25519_dalek::Signer::sign(&key, signing_bytes);
+    Ok(
+        json!({ "signer": hex(&key.verifying_key().to_bytes()), "sig": hex(&sig.to_bytes()) })
+            .to_string(),
+    )
+}
