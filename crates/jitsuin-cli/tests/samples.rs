@@ -1,7 +1,8 @@
 //! End-to-end tests of the `jitsuin` binary on the sample boards in `examples/verify/`
 //! (U-HNK-09.1, U-HNK-09.2) and `examples/index/` (HNK-08). The samples are rebuilt here from fixed keys and must match the
 //! committed files byte for byte; `JITSUIN_REGEN=1 cargo test -p jitsuin-cli --test samples`
-//! rewrites them after an intended change.
+//! rewrites them after an intended change. `examples/testnet/` is not rebuilt: it is the real
+//! testnet board (HNK-28.T6), captured with `--save-board`, and must keep verifying.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,6 +22,10 @@ const BUNDLE: &str = "examples/verify/bundle-sample.txt";
 const EXPECTED: &str = "examples/verify/expected-output.txt";
 const INDEX_BOARD: &str = "examples/index/board-sample.json";
 const INDEX_EXPECTED: &str = "examples/index/expected-output.txt";
+const TESTNET_BOARD: &str = "examples/testnet/board-snapshot.json";
+const TESTNET_PROOF: &str = "examples/testnet/proof-tes-inv-0003.txt";
+const TESTNET_EXPECTED: &str = "examples/testnet/expected-output.txt";
+const TESTNET_UFVK: &str = "examples/testnet/board-ufvk.txt";
 /// 2026-10-19 in days since the Unix epoch.
 const TODAY: u32 = 20_745;
 
@@ -430,4 +435,22 @@ fn index_json_and_higher_k() {
     let (code, _, err) = jitsuin(&["index", "--board", INDEX_BOARD, "--k", "2"]);
     assert_eq!(code, 2);
     assert!(err.contains("at least 5"));
+}
+
+#[test]
+fn published_testnet_board_and_proof_still_verify() {
+    let (code, out, err) = jitsuin(&["verify", "--board", TESTNET_BOARD, "--proof", TESTNET_PROOF]);
+    if regen() {
+        std::fs::write(root().join(TESTNET_EXPECTED), &out).unwrap();
+    }
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(out, read(TESTNET_EXPECTED));
+    assert!(out.contains("on the board at 4509299/2/0"));
+    assert!(out.contains("on the board at 4509521/3/0"));
+    assert!(out.contains("=> DOUBLE FINANCING PROVEN"));
+    let ufvk = read(TESTNET_UFVK);
+    assert_eq!(
+        jitsuin_cli::args::Network::of_ufvk(ufvk.trim()),
+        Ok(jitsuin_cli::args::Network::Test)
+    );
 }
