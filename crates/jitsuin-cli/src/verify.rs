@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use jitsuin_board::{bundle_on_board, verify_proof_on_board, BoardRecord, Lookup, Position};
+use jitsuin_board::{bundle_on_board, proof_on_board, BoardRecord, Lookup, Position};
 use jitsuin_core::bundle::BUNDLE_MAGIC;
 use jitsuin_core::proof::PROOF_MAGIC;
 use jitsuin_core::{Bundle, ChainStatus, DoubleSignProof, EntryAt, EntryKind};
@@ -145,48 +145,41 @@ pub fn check_proof(proof: &DoubleSignProof, records: &[BoardRecord]) -> Vec<Chec
             short(&report.second_commitment),
         ),
     ));
-    // Same rule as `verify_proof_on_board`, one line per claim so a failure says which.
-    let on_board = |e: &jitsuin_core::BoardEntry, at: &EntryAt| {
-        records
-            .iter()
-            .any(|r| &r.entry == e && r.txid == at.txid && r.position == position(at))
-    };
-    match &proof.first_at {
-        None => out.push(fail(
+    // One line per claim, from the same rule the web Verify page uses (`proof_on_board`).
+    let claims = proof_on_board(proof, records);
+    match (&proof.first_at, claims.first) {
+        (Some(at), Some(ok)) => out.push(check(
+            ok,
+            "first entry",
+            format!("on the board at {}", where_(at)),
+            format!("not on the board at {}", where_(at)),
+        )),
+        _ => out.push(fail(
             "first entry",
             "the proof gives no board position for the first entry".into(),
         )),
-        Some(at) => out.push(check(
-            on_board(&proof.first, at),
-            "first entry",
+    }
+    match (&proof.second_at, claims.second) {
+        (Some(at), Some(ok)) => out.push(check(
+            ok,
+            "second entry",
             format!("on the board at {}", where_(at)),
             format!("not on the board at {}", where_(at)),
         )),
-    }
-    match &proof.second_at {
-        None => out.push(info(
+        _ => out.push(info(
             "second entry",
             "offered off-chain to the financier that caught it, never posted".into(),
         )),
-        Some(at) => out.push(check(
-            on_board(&proof.second, at),
-            "second entry",
-            format!("on the board at {}", where_(at)),
-            format!("not on the board at {}", where_(at)),
-        )),
     }
-    if let (Some(a), Some(b)) = (&proof.first_at, &proof.second_at) {
+    if let Some(ok) = claims.ordered {
         out.push(check(
-            position(a) < position(b),
+            ok,
             "order",
             "the first entry came before the second".into(),
             "the \"first\" entry is not before the second".into(),
         ));
     }
-    debug_assert_eq!(
-        out.iter().all(|c| c.status != Status::Fail),
-        verify_proof_on_board(proof, records),
-    );
+    debug_assert_eq!(out.iter().all(|c| c.status != Status::Fail), claims.holds());
     out
 }
 

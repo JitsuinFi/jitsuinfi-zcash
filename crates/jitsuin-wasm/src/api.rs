@@ -305,6 +305,52 @@ fn board(board_json: &str) -> ApiResult<Collected> {
     Ok(c)
 }
 
+/// A double-signature proof checked against board data in the browser (HNK-28.T2, BL-D27-05):
+/// the signatures, then every board position the proof claims, by the same rule as
+/// `jitsuin verify` (`jitsuin_board::proof_on_board`). A position the proof only claims is
+/// reported as claimed, never as a fact; a proof without the first entry's position fails.
+pub fn verify_proof_on_board(proof_b64: &str, board_json: &str) -> ApiResult<String> {
+    let p = DoubleSignProof::from_bytes(&unb64(proof_b64)?).map_err(err)?;
+    let c = board(board_json)?;
+    let at = |a: &Option<jitsuin_core::EntryAt>| {
+        a.as_ref()
+            .map(|a| json!({ "txid": a.txid, "height": a.height, "tx_index": a.tx_index, "output_index": a.output_index }))
+            .unwrap_or(Value::Null)
+    };
+    let signatures = match p.verify() {
+        Ok(r) => json!({
+            "ok": true,
+            "nullifier": hex(&r.nullifier),
+            "supplier_pk": hex(&r.supplier_pk),
+            "first_commitment": hex(&r.first_commitment),
+            "second_commitment": hex(&r.second_commitment),
+            "invoice_id": p.invoice.invoice_id,
+        }),
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    };
+    let claims = jitsuin_board::proof_on_board(&p, &c.records);
+    let holds = signatures["ok"] == true && claims.holds();
+    Ok(json!({
+        "holds": holds,
+        "signatures": signatures,
+        "first": { "claimed_at": at(&p.first_at), "on_board": claims.first },
+        "second": { "claimed_at": at(&p.second_at), "on_board": claims.second },
+        "ordered": claims.ordered,
+        "board_entries": c.records.len(),
+    })
+    .to_string())
+}
+
+/// The public rate index of board data (HNK-28.T3, BL-D28-05): the same numbers and JSON shape
+/// as `jitsuin index --json`, without its version and board origin.
+pub fn rate_index(board_json: &str, k: u32) -> ApiResult<String> {
+    let c = board(board_json)?;
+    Ok(
+        jitsuin_board::rate_index_json(&jitsuin_board::rate_index(&c.records, k as usize))
+            .to_string(),
+    )
+}
+
 /// Bundle checked against board data in the browser, without trusting the server's verdict.
 pub fn bundle_on_board(bundle_b64: &str, board_json: &str) -> ApiResult<String> {
     let b = Bundle::from_bytes(&unb64(bundle_b64)?).map_err(err)?;

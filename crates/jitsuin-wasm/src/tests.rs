@@ -654,3 +654,122 @@ fn supplier_master_keys_and_storage_keys() {
     assert_eq!(viaby, s);
     assert_eq!(m, [0u8; 32]);
 }
+
+#[test]
+fn proofs_and_the_rate_index_are_checked_against_board_data_as_in_the_cli() {
+    use serde_json::json;
+    let inv_b64 = invoice_b64();
+    let entry = |fin: u8, salt: &str, d: Option<u8>, t: Option<u8>| {
+        let fin = hex(&key(fin).verifying_key().to_bytes());
+        parse(&api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin, salt, d, t).unwrap())
+    };
+    let a = entry(3, &"0a".repeat(32), Some(2), Some(3));
+    let b = entry(4, &"0b".repeat(32), None, None);
+    let (ma, mb) = (a["memo"].as_str().unwrap(), b["memo"].as_str().unwrap());
+    let sig = api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap();
+    let (ta, tb) = ("aa".repeat(32), "bb".repeat(32));
+    let at = |txid: &str, height: u32| {
+        format!(r#"{{"txid":"{txid}","height":{height},"tx_index":1,"output_index":0}}"#)
+    };
+    let item = |txid: &str, height: u32, memo: &str| {
+        format!(
+            r#"{{"txid":"{txid}","height":{height},"tx_index":1,"output_index":0,"memo":"{memo}"}}"#
+        )
+    };
+    let board = format!("[{},{}]", item(&ta, 10, ma), item(&tb, 12, mb));
+    let only_first = format!("[{}]", item(&ta, 10, ma));
+
+    // positions on the board: the proof holds
+    let positioned = api::double_sign_proof(
+        &inv_b64,
+        &sig,
+        ma,
+        mb,
+        Some(&at(&ta, 10)),
+        Some(&at(&tb, 12)),
+    )
+    .unwrap();
+    let r = parse(&api::verify_proof_on_board(&positioned, &board).unwrap());
+    assert_eq!(r["holds"], true);
+    assert_eq!(r["signatures"]["ok"], true);
+    assert_eq!(
+        (
+            r["first"]["on_board"].clone(),
+            r["second"]["on_board"].clone(),
+            r["ordered"].clone()
+        ),
+        (json!(true), json!(true), json!(true))
+    );
+    assert_eq!(r["first"]["claimed_at"]["height"], 10);
+
+    // the second entry claimed on chain but missing from this board: fails, and says which
+    let r = parse(&api::verify_proof_on_board(&positioned, &only_first).unwrap());
+    assert_eq!(r["holds"], false);
+    assert_eq!(r["first"]["on_board"], true);
+    assert_eq!(r["second"]["on_board"], false);
+
+    // second entry offered off-chain (no position): still holds
+    let offchain =
+        api::double_sign_proof(&inv_b64, &sig, ma, mb, Some(&at(&ta, 10)), None).unwrap();
+    let r = parse(&api::verify_proof_on_board(&offchain, &only_first).unwrap());
+    assert_eq!(r["holds"], true);
+    assert_eq!(r["second"]["on_board"], Value::Null);
+    assert_eq!(r["ordered"], Value::Null);
+
+    // no position for the first entry: FAIL in the web, as in `jitsuin verify` (BL-D27-05)
+    let unpositioned = api::double_sign_proof(&inv_b64, &sig, ma, mb, None, None).unwrap();
+    let r = parse(&api::verify_proof_on_board(&unpositioned, &board).unwrap());
+    assert_eq!(r["holds"], false);
+    assert_eq!(r["first"]["claimed_at"], Value::Null);
+    assert_eq!(r["first"]["on_board"], Value::Null);
+
+    // a claimed position that is not where the entry is
+    let moved = api::double_sign_proof(
+        &inv_b64,
+        &sig,
+        ma,
+        mb,
+        Some(&at(&ta, 11)),
+        Some(&at(&tb, 12)),
+    )
+    .unwrap();
+    assert_eq!(
+        parse(&api::verify_proof_on_board(&moved, &board).unwrap())["first"]["on_board"],
+        false
+    );
+
+    // a forged buyer signature: the signature check fails, so the proof does not hold
+    let mut p = jitsuin_core::DoubleSignProof::from_bytes(&base64_decode(&positioned)).unwrap();
+    p.buyer_signature[0] ^= 1;
+    let forged = b64(&p.to_bytes().unwrap());
+    let r = parse(&api::verify_proof_on_board(&forged, &board).unwrap());
+    assert_eq!(
+        (r["holds"].clone(), r["signatures"]["ok"].clone()),
+        (json!(false), json!(false))
+    );
+
+    // the rate index from board data is the CLI's `rate_index_json` of the same records
+    let records: Vec<jitsuin_board::BoardRecord> = [(&ta, 10, ma), (&tb, 12, mb)]
+        .iter()
+        .map(|(t, h, m)| jitsuin_board::BoardRecord {
+            txid: t.to_string(),
+            position: jitsuin_board::Position {
+                height: *h,
+                tx_index: 1,
+                output_index: 0,
+            },
+            entry: jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(m)).unwrap(),
+        })
+        .collect();
+    for k in [1, 5, 9] {
+        let web = parse(&api::rate_index(&board, k).unwrap());
+        let cli = jitsuin_board::rate_index_json(&jitsuin_board::rate_index(&records, k as usize));
+        assert_eq!(web, cli);
+    }
+    let i = parse(&api::rate_index(&board, 5).unwrap());
+    assert_eq!(
+        (i["entries"].clone(), i["invoices"].clone(), i["k"].clone()),
+        (json!(2), json!(1), json!(5))
+    );
+    assert!(api::rate_index("not json", 5).is_err());
+}
