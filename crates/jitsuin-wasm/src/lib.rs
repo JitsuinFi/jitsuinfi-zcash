@@ -283,6 +283,28 @@ pub fn supplier_register_history_entry(
     ))
 }
 
+/// Register memo carrying a history tag (hex) from the financier, without certificate k.
+#[wasm_bindgen(js_name = supplierRegisterTaggedEntry)]
+pub fn supplier_register_tagged_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    history_tag_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> Result<String, JsError> {
+    js(api::supplier_register_tagged_entry(
+        supplier_secret_hex,
+        invoice_b64,
+        financier_pk_hex,
+        salt_hex,
+        history_tag_hex,
+        discount,
+        tenor,
+    ))
+}
+
 #[wasm_bindgen(js_name = financierSettle)]
 pub fn financier_settle(
     financier_secret_hex: &str,

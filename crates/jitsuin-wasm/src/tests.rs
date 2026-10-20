@@ -537,6 +537,23 @@ fn a_repaid_history_verifies_and_a_hidden_invoice_is_caught() {
             )
             .unwrap(),
         );
+        // the tag-only variant signs the same entry without certificate k
+        let tag = jitsuin_core::HistoryCert::from_bytes(&base64_decode(&cert))
+            .unwrap()
+            .tag();
+        let tagged = parse(
+            &api::supplier_register_tagged_entry(
+                &"01".repeat(32),
+                &inv,
+                &fin_pk,
+                &"0a".repeat(32),
+                &hex(&tag),
+                Some(2),
+                Some(3),
+            )
+            .unwrap(),
+        );
+        assert_eq!(tagged, reg);
         let letter = api::assignment_encode(&inv, &fin_pk, "utest1financier", &terms).unwrap();
         let pay = parse(&api::buyer_repayment(MASTER, i, &inv, &letter, paid).unwrap());
         let settled = parse(

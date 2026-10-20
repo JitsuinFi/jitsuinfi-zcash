@@ -695,6 +695,39 @@ pub fn supplier_register_history_entry(
     Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
 }
 
+/// Register memo with a history tag given directly (K-10, HNK-27.T8): the financier checks the
+/// buyer's certificate and passes only its 32-byte tag, so the supplier never holds certificate k
+/// (whose holder can follow the buyer's next invoices, TM #6). The financier's `check_entry`
+/// refuses the entry when the tag is not the one of the checked certificate.
+pub fn supplier_register_tagged_entry(
+    supplier_secret_hex: &str,
+    invoice_b64: &str,
+    financier_pk_hex: &str,
+    salt_hex: &str,
+    history_tag_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
+) -> ApiResult<String> {
+    let (d, t) = entry_classes(discount, tenor)?;
+    let inv = invoice(invoice_b64)?;
+    let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
+    if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
+        return Err("key is not the supplier key of this invoice".into());
+    }
+    let n = nullifier(&inv).map_err(err)?;
+    let commitment =
+        jitsuin_core::financier_commitment(&unhex(financier_pk_hex)?, &unhex(salt_hex)?);
+    let e = jitsuin_core::BoardEntry::sign_with_history(
+        &key,
+        n,
+        commitment,
+        d,
+        t,
+        unhex(history_tag_hex)?,
+    );
+    Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
+}
+
 /// Settled memo (base64url): the financier countersigns the buyer's repayment memo (from
 /// `buyer_repayment`). On time when the buyer's receipt is dated on or before the due date.
 pub fn financier_settle(
