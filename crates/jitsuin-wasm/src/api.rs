@@ -5,7 +5,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::SigningKey;
-use jitsuin_board::history::{verify_history as board_verify_history, Outcome};
+use jitsuin_board::history::{own_chain, verify_history as board_verify_history, Outcome};
 use jitsuin_board::{bundle_on_board as board_bundle_on_board, Collected, Lookup, Position};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
@@ -380,6 +380,30 @@ pub fn bundle_on_board(bundle_b64: &str, board_json: &str) -> ApiResult<String> 
 }
 
 /// Buyer history checked against board data in the browser (HNK-20).
+/// The buyer's next invoice index from its own certificates and board data (HNK-25.T2, P-09):
+/// anchored certificates count, never-anchored trailing ones are dropped, and a successor tag
+/// already on the board means this device is missing its newest certificate.
+pub fn history_next(
+    certs_json: &str,
+    identity_pk_hex: &str,
+    board_json: &str,
+) -> ApiResult<String> {
+    let certs: Vec<String> = serde_json::from_str(certs_json).map_err(err)?;
+    let certs: Vec<HistoryCert> = certs
+        .iter()
+        .map(|c| HistoryCert::from_bytes(&unb64(c)?).map_err(err))
+        .collect::<ApiResult<_>>()?;
+    let c = board(board_json)?;
+    let r = own_chain(&certs, &unhex(identity_pk_hex)?, &c.records).map_err(err)?;
+    Ok(json!({
+        "anchored": r.anchored,
+        "dropped": r.dropped,
+        "next_index": r.next_index,
+        "successor_on_board": r.successor_on_board,
+    })
+    .to_string())
+}
+
 pub fn verify_history(
     certs_json: &str,
     identity_pk_hex: &str,

@@ -204,6 +204,30 @@ fn history_and_proofs_in_the_browser() {
     assert_eq!(open["lines"][0]["outcome"], "Open");
     let late = parse(&api::verify_history(&certs, &id_pk, &allow, &board, 20_040, 7).unwrap());
     assert_eq!(late["defaults"], 1);
+    // the next index comes from the anchored chain (P-09): 1 after certificate 0
+    let next = parse(&api::history_next(&certs, &id_pk, &board).unwrap());
+    assert_eq!(
+        (
+            next["next_index"].clone(),
+            next["successor_on_board"].clone()
+        ),
+        (serde_json::json!(1), serde_json::json!(false))
+    );
+    // a device without certificate 0 sees its successor tag taken on the board
+    let lost = parse(&api::history_next("[]", &id_pk, &board).unwrap());
+    assert_eq!(
+        (
+            lost["next_index"].clone(),
+            lost["successor_on_board"].clone()
+        ),
+        (serde_json::json!(0), serde_json::json!(true))
+    );
+    // certificate 0 not on this board: dropped, index 0 reused
+    let none = parse(&api::history_next(&certs, &id_pk, "[]").unwrap());
+    assert_eq!(
+        (none["next_index"].clone(), none["dropped"].clone()),
+        (serde_json::json!(0), serde_json::json!([0]))
+    );
     // hiding certificate 0 is detected
     assert!(api::verify_history("[]", &id_pk, &allow, &board, 20_040, 7)
         .unwrap_err()
