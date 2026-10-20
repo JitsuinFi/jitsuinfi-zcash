@@ -603,3 +603,25 @@ fn a_repaid_history_verifies_and_a_hidden_invoice_is_caught() {
     let second_only = serde_json::json!([certs[1]]).to_string();
     assert!(api::verify_history(&second_only, &id_pk, &allow, &board, 20_100, 7).is_err());
 }
+
+#[test]
+fn byte_secrets_are_zeroed_after_use() {
+    let inv_b64 = invoice_b64();
+    let mut master = [0x42u8; 32];
+    let sig = api::with_secret(&mut master, |m| api::buyer_sign_invoice(m, 0, &inv_b64)).unwrap();
+    // same signature as the hex API, and the caller's bytes are zero afterwards
+    assert_eq!(sig, api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap());
+    assert_eq!(master, [0u8; 32]);
+    // a wrong length is refused and still wiped
+    let mut short = [7u8; 16];
+    assert!(api::with_secret(&mut short, |m| api::buyer_keys(m, 0)).is_err());
+    assert_eq!(short, [0u8; 16]);
+    // an error inside the call still leaves the secret wiped
+    let mut supplier = [0x02u8; 32];
+    let fin = hex(&key(3).verifying_key().to_bytes());
+    let r = api::with_secret(&mut supplier, |k| {
+        api::supplier_register_entry(k, &inv_b64, &fin, &"0a".repeat(32), None, None)
+    });
+    assert!(r.is_err()); // 0x02 is not the invoice's supplier key
+    assert_eq!(supplier, [0u8; 32]);
+}

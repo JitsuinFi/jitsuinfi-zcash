@@ -20,6 +20,33 @@ use serde_json::{json, Value};
 
 pub type ApiResult<T> = Result<T, String>;
 
+/// Overwrites `bytes` with zeros in a way the compiler does not remove.
+fn wipe(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // SAFETY: `b` is a valid, aligned `&mut u8`.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Runs `f` with a 32-byte secret given as bytes (P-07, HNK-27.T9): the secret is turned into the
+/// hex form the API takes, `secret` is zeroed at once, and the hex copy is zeroed after `f`. In the
+/// browser `secret` is the page's `Uint8Array` passed as `&mut [u8]`; wasm-bindgen copies it back,
+/// so the page's array is all zeros when the call returns. Best effort: keys derived inside `f`
+/// are dropped (and `SigningKey`, `BuyerIdentity` zero themselves on drop).
+pub fn with_secret<T>(secret: &mut [u8], f: impl FnOnce(&str) -> ApiResult<T>) -> ApiResult<T> {
+    if secret.len() != 32 {
+        wipe(secret);
+        return Err("expected a 32-byte secret".into());
+    }
+    let mut h = hex(secret);
+    wipe(secret);
+    let r = f(&h);
+    // SAFETY: zero bytes are valid UTF-8, so the string stays valid.
+    wipe(unsafe { h.as_bytes_mut() });
+    r
+}
+
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
