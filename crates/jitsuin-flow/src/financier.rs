@@ -21,7 +21,12 @@ use jitsuin_core::{
 };
 use jitsuin_wallet::{Devtool, Memo, Payment, PaymentMemo, WalletTx};
 
+use crate::codec::{Reader, Writer};
 use crate::Error;
+
+/// Magic and version of a deal snapshot ([`Flow::to_bytes`]).
+pub const FLOW_MAGIC: &[u8; 4] = b"JTSF";
+pub const FLOW_VERSION: u8 = 1;
 
 /// Value sent with each board entry; the board only needs the memo.
 pub const ENTRY_POST_ZAT: u64 = 10_000;
@@ -237,6 +242,188 @@ impl Flow {
         )?;
         proof.verify()?;
         Ok(Some(proof))
+    }
+
+    /// Snapshot of the deal and its state for the node's store (HNK-26.T10): a node restarted
+    /// from it resumes the deal where it stopped. Format `JTSF` v1, see [`Flow::from_bytes`].
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut w = Writer::default();
+        w.raw(FLOW_MAGIC);
+        w.byte(FLOW_VERSION);
+        let d = &self.deal;
+        w.bytes(&d.invoice.to_canonical_bytes()?)?;
+        w.bytes(&d.assignment.to_canonical_bytes()?)?;
+        w.raw(&d.financier_commitment);
+        w.str(&d.supplier_address)?;
+        w.u64(d.advance_zat);
+        w.u32(d.min_confirmations);
+        match &d.history_tag {
+            None => w.byte(0),
+            Some(tag) => {
+                w.byte(1);
+                w.raw(tag);
+            }
+        }
+        w.byte(d.discount_bucket);
+        w.byte(d.tenor_bucket);
+        match &self.state {
+            State::Check => w.byte(0),
+            State::AwaitSupplierSignature => w.byte(1),
+            State::Register { entry } => {
+                w.byte(2);
+                w.entry(entry);
+            }
+            State::AwaitConfirmation { entry_txid } => {
+                w.byte(3);
+                w.str(entry_txid)?;
+            }
+            State::AwaitAssignment { entry } => {
+                w.byte(4);
+                w.record(entry)?;
+            }
+            State::Pay {
+                entry,
+                assignment_seals,
+                expired_advances,
+            } => {
+                w.byte(5);
+                w.record(entry)?;
+                w.seals(assignment_seals)?;
+                w.strs(expired_advances)?;
+            }
+            State::AwaitAdvanceConfirmation {
+                entry,
+                assignment_seals,
+                advance_txid,
+                sent_tip,
+                expired_advances,
+            } => {
+                w.byte(6);
+                w.record(entry)?;
+                w.seals(assignment_seals)?;
+                w.str(advance_txid)?;
+                w.u32(*sent_tip);
+                w.strs(expired_advances)?;
+            }
+            State::Done {
+                entry,
+                advance_txid,
+            } => {
+                w.byte(7);
+                w.record(entry)?;
+                w.str(advance_txid)?;
+            }
+            State::Stopped(Stop::AlreadyFinanced { winner }) => {
+                w.byte(8);
+                w.record(winner)?;
+            }
+            State::Stopped(Stop::DoubleFinanced {
+                winner,
+                conflicting,
+            }) => {
+                w.byte(9);
+                w.record(winner)?;
+                w.records(conflicting)?;
+            }
+        }
+        Ok(w.out)
+    }
+
+    /// Strict decoder of [`Flow::to_bytes`]. The deal is checked again as in [`Flow::new`], our
+    /// own entry as when the supplier signed it, and the letter seals as when they arrived, so a
+    /// damaged or edited snapshot never resumes a deal that `apply` would not have reached.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes);
+        if r.take(4)? != FLOW_MAGIC {
+            return Err(Error::Snapshot("not a deal snapshot"));
+        }
+        let version = r.byte()?;
+        if version != FLOW_VERSION {
+            return Err(Error::Snapshot("unsupported snapshot version"));
+        }
+        let deal = Deal {
+            invoice: Invoice::from_canonical_bytes(r.bytes()?)?,
+            assignment: Assignment::from_canonical_bytes(r.bytes()?)?,
+            financier_commitment: r.array()?,
+            supplier_address: r.str()?,
+            advance_zat: r.u64()?,
+            min_confirmations: r.u32()?,
+            history_tag: match r.byte()? {
+                0 => None,
+                1 => Some(r.array()?),
+                _ => return Err(Error::Snapshot("malformed snapshot")),
+            },
+            discount_bucket: r.byte()?,
+            tenor_bucket: r.byte()?,
+        };
+        let mut flow = Flow::new(deal)?;
+        let state = match r.byte()? {
+            0 => State::Check,
+            1 => State::AwaitSupplierSignature,
+            2 => State::Register { entry: r.entry()? },
+            3 => State::AwaitConfirmation {
+                entry_txid: r.str()?,
+            },
+            4 => State::AwaitAssignment { entry: r.record()? },
+            5 => State::Pay {
+                entry: r.record()?,
+                assignment_seals: r.seals()?,
+                expired_advances: r.strs()?,
+            },
+            6 => State::AwaitAdvanceConfirmation {
+                entry: r.record()?,
+                assignment_seals: r.seals()?,
+                advance_txid: r.str()?,
+                sent_tip: r.u32()?,
+                expired_advances: r.strs()?,
+            },
+            7 => State::Done {
+                entry: r.record()?,
+                advance_txid: r.str()?,
+            },
+            8 => State::Stopped(Stop::AlreadyFinanced {
+                winner: r.record()?,
+            }),
+            9 => State::Stopped(Stop::DoubleFinanced {
+                winner: r.record()?,
+                conflicting: r.records()?,
+            }),
+            _ => return Err(Error::Snapshot("unknown state")),
+        };
+        r.finish()?;
+        match &state {
+            State::Register { entry } => flow.check_entry(entry)?,
+            State::AwaitAssignment { entry } | State::Done { entry, .. } => {
+                flow.check_entry(&entry.entry)?
+            }
+            State::Pay {
+                entry,
+                assignment_seals,
+                ..
+            }
+            | State::AwaitAdvanceConfirmation {
+                entry,
+                assignment_seals,
+                ..
+            } => {
+                flow.check_entry(&entry.entry)?;
+                if !matches!(
+                    flow.deal
+                        .assignment
+                        .verify(&flow.deal.invoice, assignment_seals)?,
+                    ChainStatus::Incomplete {
+                        next: Role::Financier
+                    }
+                ) {
+                    return Err(Error::Snapshot(
+                        "assignment needs exactly the supplier and buyer seals",
+                    ));
+                }
+            }
+            _ => {}
+        }
+        flow.state = state;
+        Ok(flow)
     }
 
     /// Applies one event. On error the state is unchanged.
@@ -662,7 +849,7 @@ fn unexpected(flow: &Flow, event: &'static str) -> Error {
 mod tests {
     use super::*;
     use jitsuin_board::{verify_proof_on_board, Position};
-    use jitsuin_core::{financier_commitment, sign_invoice, EntryKind};
+    use jitsuin_core::{financier_commitment, sign_invoice, EntryKind, SEAL_LEN};
     use jitsuin_wallet::TxOutput;
 
     fn key(b: u8) -> SigningKey {
@@ -1055,6 +1242,151 @@ mod tests {
         ));
         let buyer_signature = sign_invoice(&buyer(), &invoice()).unwrap().to_bytes();
         assert_eq!(flow.double_sign_proof(buyer_signature).unwrap(), None);
+    }
+
+    /// Snapshot and restore; the restored flow must equal the original byte for byte.
+    fn restored(flow: &Flow) -> Flow {
+        let bytes = flow.to_bytes().unwrap();
+        let back = Flow::from_bytes(&bytes).unwrap();
+        assert_eq!(back.state(), flow.state());
+        assert_eq!(back.deal(), flow.deal());
+        assert_eq!(back.nullifier(), flow.nullifier());
+        assert_eq!(back.to_bytes().unwrap(), bytes);
+        back
+    }
+
+    #[test]
+    fn a_restored_snapshot_resumes_the_deal_in_every_state() {
+        let mut flow = restored(&Flow::new(deal(1)).unwrap());
+        flow.apply(board(&[], 10)).unwrap();
+        let mut flow = restored(&flow);
+        assert_eq!(flow.state(), &State::AwaitSupplierSignature);
+        flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        let mut flow = restored(&flow);
+        flow.apply(Event::EntryPosted { txid: "e".into() }).unwrap();
+        let mut flow = restored(&flow);
+        let mine = record("e", 11, entry(ours()));
+        flow.apply(board(std::slice::from_ref(&mine), 11)).unwrap();
+        let mut flow = restored(&flow);
+        assert!(matches!(flow.state(), State::AwaitAssignment { .. }));
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        let mut flow = restored(&flow);
+        assert!(matches!(flow.state(), State::Pay { .. }));
+        flow.apply(Event::AdvanceSent {
+            txid: "a".into(),
+            tip_height: 12,
+        })
+        .unwrap();
+        let mut flow = restored(&flow);
+        // the advance expires unmined: the restored flow remembers it and pays again
+        flow.apply(Event::AdvanceChecked {
+            mined: false,
+            tip_height: 12 + ADVANCE_EXPIRY_BLOCKS + 1,
+        })
+        .unwrap();
+        let mut flow = restored(&flow);
+        assert!(matches!(
+            flow.state(),
+            State::Pay { expired_advances, .. } if expired_advances == &["a".to_string()]
+        ));
+        flow.apply(Event::AdvanceSent {
+            txid: "b".into(),
+            tip_height: 70,
+        })
+        .unwrap();
+        let mut flow = restored(&flow);
+        flow.apply(Event::AdvanceChecked {
+            mined: true,
+            tip_height: 71,
+        })
+        .unwrap();
+        let flow = restored(&flow);
+        assert_eq!(
+            flow.state(),
+            &State::Done {
+                entry: mine,
+                advance_txid: "b".into()
+            }
+        );
+
+        let other = record("o", 11, entry([0xEE; 32]));
+        let mut stopped = Flow::new(deal(1)).unwrap();
+        stopped
+            .apply(board(std::slice::from_ref(&other), 11))
+            .unwrap();
+        assert!(matches!(
+            restored(&stopped).state(),
+            State::Stopped(Stop::AlreadyFinanced { .. })
+        ));
+        let mut double = Flow::new(deal(1)).unwrap();
+        double.apply(board(&[], 10)).unwrap();
+        double.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        double
+            .apply(Event::EntryPosted { txid: "e".into() })
+            .unwrap();
+        double
+            .apply(board(&[other, record("e", 12, entry(ours()))], 12))
+            .unwrap();
+        assert!(matches!(
+            restored(&double).state(),
+            State::Stopped(Stop::DoubleFinanced { .. })
+        ));
+
+        let mut tagged = deal(1);
+        tagged.history_tag = Some([7; 32]);
+        restored(&Flow::new(tagged).unwrap());
+    }
+
+    #[test]
+    fn a_damaged_or_edited_snapshot_is_refused() {
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(&[], 10)).unwrap();
+        flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        flow.apply(Event::EntryPosted { txid: "e".into() }).unwrap();
+        flow.apply(board(&[record("e", 11, entry(ours()))], 11))
+            .unwrap();
+        flow.apply(Event::AssignmentSealed(seals())).unwrap();
+        let good = flow.to_bytes().unwrap();
+
+        let mut bad = good.clone();
+        bad[0] = b'X';
+        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Snapshot(_))));
+        let mut bad = good.clone();
+        bad[4] = 2;
+        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Snapshot(_))));
+        let mut bad = good.clone();
+        bad.push(0);
+        assert!(matches!(Flow::from_bytes(&bad), Err(Error::Snapshot(_))));
+        assert!(Flow::from_bytes(&good[..good.len() - 1]).is_err());
+        // the Pay state with only the supplier's seal: apply would never have reached it
+        let mut one_seal = flow.clone();
+        if let State::Pay {
+            assignment_seals, ..
+        } = &mut one_seal.state
+        {
+            assignment_seals.truncate(1);
+        }
+        assert!(Flow::from_bytes(&one_seal.to_bytes().unwrap()).is_err());
+        // the buyer's seal with a broken signature
+        let mut broken = flow.clone();
+        if let State::Pay {
+            assignment_seals, ..
+        } = &mut broken.state
+        {
+            let mut b = assignment_seals[1].to_bytes();
+            b[SEAL_LEN - 1] ^= 1;
+            assignment_seals[1] = Seal::from_bytes(&b).unwrap();
+        }
+        assert!(Flow::from_bytes(&broken.to_bytes().unwrap()).is_err());
+        // an entry for another financier in our Register state
+        let mut foreign = Flow::new(deal(1)).unwrap();
+        foreign.state = State::Register {
+            entry: entry([0xEE; 32]),
+        };
+        assert!(matches!(
+            Flow::from_bytes(&foreign.to_bytes().unwrap()),
+            Err(Error::EntryMismatch(_))
+        ));
     }
 
     #[test]

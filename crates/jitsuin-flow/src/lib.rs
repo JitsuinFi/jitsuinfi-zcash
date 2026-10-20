@@ -13,6 +13,7 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod buyer;
+mod codec;
 pub mod financier;
 pub mod fund;
 pub mod history;
@@ -43,6 +44,8 @@ pub enum Error {
     History(jitsuin_board::history::HistoryError),
     /// The buyer's history does not meet the financier's minimum standard.
     BelowStandard(&'static str),
+    /// A stored deal snapshot that cannot be read back (HNK-26.T10).
+    Snapshot(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -63,6 +66,7 @@ impl fmt::Display for Error {
             }
             Error::History(e) => write!(f, "history: {e}"),
             Error::BelowStandard(m) => write!(f, "below minimum standard: {m}"),
+            Error::Snapshot(m) => write!(f, "deal snapshot: {m}"),
         }
     }
 }
