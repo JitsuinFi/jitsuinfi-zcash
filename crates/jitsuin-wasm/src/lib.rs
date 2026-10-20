@@ -103,17 +103,22 @@ pub fn buyer_history_cert(
 }
 
 #[wasm_bindgen(js_name = supplierRegisterEntry)]
+/// `discount` and `tenor` are the classes from the financier (both or neither; omitted = `0/0`).
 pub fn supplier_register_entry(
     supplier_secret_hex: &str,
     invoice_b64: &str,
     financier_pk_hex: &str,
     salt_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> Result<String, JsError> {
     js(api::supplier_register_entry(
         supplier_secret_hex,
         invoice_b64,
         financier_pk_hex,
         salt_hex,
+        discount,
+        tenor,
     ))
 }
 
@@ -252,6 +257,8 @@ pub fn supplier_register_history_entry(
     financier_pk_hex: &str,
     salt_hex: &str,
     cert_b64: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> Result<String, JsError> {
     js(api::supplier_register_history_entry(
         supplier_secret_hex,
@@ -259,6 +266,8 @@ pub fn supplier_register_history_entry(
         financier_pk_hex,
         salt_hex,
         cert_b64,
+        discount,
+        tenor,
     ))
 }
 

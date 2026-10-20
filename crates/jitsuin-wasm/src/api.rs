@@ -424,12 +424,27 @@ pub fn assignment_status(
 
 /// Register entry for the board (memo, base64url), signed with the supplier's key of this invoice,
 /// committing to one financier: `BLAKE2b-256(financier_pk ‖ salt)`. Also returns the commitment.
+/// Discount and tenor classes for an entry: both given and valid, or both absent (`0/0`, not
+/// disclosed).
+fn entry_classes(discount: Option<u8>, tenor: Option<u8>) -> ApiResult<(u8, u8)> {
+    let (d, t) = match (discount, tenor) {
+        (None, None) => (0, 0),
+        (Some(d), Some(t)) => (d, t),
+        _ => return Err("give both the discount and the tenor class, or neither".into()),
+    };
+    jitsuin_core::index::validate_classes(d, t).map_err(err)?;
+    Ok((d, t))
+}
+
 pub fn supplier_register_entry(
     supplier_secret_hex: &str,
     invoice_b64: &str,
     financier_pk_hex: &str,
     salt_hex: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> ApiResult<String> {
+    let (d, t) = entry_classes(discount, tenor)?;
     let inv = invoice(invoice_b64)?;
     let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
     if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
@@ -442,8 +457,8 @@ pub fn supplier_register_entry(
         jitsuin_core::EntryKind::Register,
         nullifier(&inv).map_err(err)?,
         commitment,
-        0,
-        0,
+        d,
+        t,
     );
     Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
 }
@@ -598,7 +613,10 @@ pub fn supplier_register_history_entry(
     financier_pk_hex: &str,
     salt_hex: &str,
     cert_b64: &str,
+    discount: Option<u8>,
+    tenor: Option<u8>,
 ) -> ApiResult<String> {
+    let (d, t) = entry_classes(discount, tenor)?;
     let inv = invoice(invoice_b64)?;
     let key = SigningKey::from_bytes(&unhex::<32>(supplier_secret_hex)?);
     if key.verifying_key().to_bytes() != inv.supplier_ephemeral_pk {
@@ -611,7 +629,7 @@ pub fn supplier_register_history_entry(
     }
     let commitment =
         jitsuin_core::financier_commitment(&unhex(financier_pk_hex)?, &unhex(salt_hex)?);
-    let e = jitsuin_core::BoardEntry::sign_with_history(&key, n, commitment, 0, 0, cert.tag());
+    let e = jitsuin_core::BoardEntry::sign_with_history(&key, n, commitment, d, t, cert.tag());
     Ok(json!({ "memo": b64(&e.to_memo_bytes()), "commitment": hex(&commitment) }).to_string())
 }
 

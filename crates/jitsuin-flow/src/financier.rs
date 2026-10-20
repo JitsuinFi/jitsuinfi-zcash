@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use jitsuin_board::{lookup, lwd, scan, BoardRecord, Lookup};
+use jitsuin_core::index::{classes_for, validate_classes};
 use jitsuin_core::memo::{self, MemoItem};
 use jitsuin_core::{
     commitment_opening, nullifier, Assignment, BoardEntry, ChainStatus, Invoice, Receipt,
@@ -41,6 +42,23 @@ pub struct Deal {
     /// Tag of the buyer's new history certificate (HNK-20). When set, the register entry must
     /// carry it, so the invoice joins the buyer's anchored history.
     pub history_tag: Option<[u8; 32]>,
+    /// Discount and tenor classes the register entry must carry (HNK-08, HNK-27.T2), normally
+    /// from [`deal_classes`]; `0/0` means not disclosed.
+    pub discount_bucket: u8,
+    pub tenor_bucket: u8,
+}
+
+/// Classes of a deal for the public rate index: from the face value, the advance, the advance
+/// date and the due date (days since the Unix epoch). A deal that fits no class (advance above
+/// face value, due date before the advance or more than a year later) is registered as `0/0`.
+pub fn deal_classes(invoice: &Invoice, advance_zat: u64, advance_day: u32) -> (u8, u8) {
+    classes_for(
+        invoice.amount_zat,
+        advance_zat,
+        advance_day,
+        invoice.due_date,
+    )
+    .unwrap_or((0, 0))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +161,9 @@ impl Flow {
         }
         if deal.supplier_address.is_empty() {
             return Err(Error::InvalidDeal("supplier address is empty"));
+        }
+        if validate_classes(deal.discount_bucket, deal.tenor_bucket).is_err() {
+            return Err(Error::InvalidDeal("unknown discount or tenor class"));
         }
         let nullifier = nullifier(&deal.invoice)?;
         // The letter must belong to this invoice and must not let one key hold two roles.
@@ -268,6 +289,13 @@ impl Flow {
         }
         if self.deal.history_tag.is_some() && entry.history_tag != self.deal.history_tag {
             return Err(Error::EntryMismatch("history tag missing or wrong"));
+        }
+        if (entry.discount_bucket, entry.tenor_bucket)
+            != (self.deal.discount_bucket, self.deal.tenor_bucket)
+        {
+            return Err(Error::EntryMismatch(
+                "discount or tenor class differs from the deal",
+            ));
         }
         entry
             .verify(&self.deal.invoice.supplier_ephemeral_pk)
@@ -503,6 +531,8 @@ mod tests {
             advance_zat: 950_000,
             min_confirmations,
             history_tag: None,
+            discount_bucket: 2,
+            tenor_bucket: 3,
         }
     }
 
@@ -718,6 +748,41 @@ mod tests {
             ));
             assert_eq!(flow.state(), &State::AwaitSupplierSignature);
         }
+    }
+
+    #[test]
+    fn entry_classes_must_match_the_deal() {
+        let mut flow = Flow::new(deal(1)).unwrap();
+        flow.apply(board(&[], 1)).unwrap();
+        // 0/0 (or any other class) when the deal says 2/3 is refused, state unchanged
+        for (d, t) in [(0, 0), (3, 3), (2, 4)] {
+            let e = BoardEntry::sign(&supplier(), EntryKind::Register, n(), ours(), d, t);
+            assert!(matches!(
+                flow.apply(Event::SupplierSigned(e)),
+                Err(Error::EntryMismatch(
+                    "discount or tenor class differs from the deal"
+                ))
+            ));
+            assert_eq!(flow.state(), &State::AwaitSupplierSignature);
+        }
+        flow.apply(Event::SupplierSigned(entry(ours()))).unwrap();
+        assert!(matches!(flow.state(), State::Register { .. }));
+    }
+
+    #[test]
+    fn deal_classes_come_from_face_advance_and_dates() {
+        // 1 000 000 zat face, 975 000 advance (2.5% discount), 45 days: same vector as index.rs
+        let mut inv = invoice();
+        inv.amount_zat = 1_000_000;
+        inv.due_date = 20_790;
+        assert_eq!(deal_classes(&inv, 975_000, 20_745), (3, 2));
+        // a deal that fits no class is registered as 0/0
+        assert_eq!(deal_classes(&inv, 1_000_001, 20_745), (0, 0));
+        assert_eq!(deal_classes(&inv, 975_000, 20_791), (0, 0));
+        // an unknown class makes the deal invalid
+        let mut d = deal(1);
+        d.discount_bucket = 99;
+        assert!(matches!(Flow::new(d), Err(Error::InvalidDeal(_))));
     }
 
     #[test]

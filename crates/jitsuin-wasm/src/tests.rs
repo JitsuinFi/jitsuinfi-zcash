@@ -307,20 +307,58 @@ fn two_register_entries_for_two_financiers_make_a_verifiable_proof() {
     let fin_a = hex(&key(3).verifying_key().to_bytes());
     let fin_b = hex(&key(4).verifying_key().to_bytes());
     let a = parse(
-        &api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin_a, &"0a".repeat(32))
-            .unwrap(),
+        &api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin_a,
+            &"0a".repeat(32),
+            None,
+            None,
+        )
+        .unwrap(),
     );
     let b = parse(
-        &api::supplier_register_entry(&"01".repeat(32), &inv_b64, &fin_b, &"0b".repeat(32))
-            .unwrap(),
+        &api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin_b,
+            &"0b".repeat(32),
+            Some(2),
+            Some(3),
+        )
+        .unwrap(),
     );
     // only the invoice's supplier key may register it
-    assert!(
-        api::supplier_register_entry(&"02".repeat(32), &inv_b64, &fin_a, &"0a".repeat(32)).is_err()
-    );
+    assert!(api::supplier_register_entry(
+        &"02".repeat(32),
+        &inv_b64,
+        &fin_a,
+        &"0a".repeat(32),
+        None,
+        None
+    )
+    .is_err());
     // the board reads N and the commitment from each memo
     let da = parse(&api::board_memo_describe(a["memo"].as_str().unwrap()).unwrap());
     let db = parse(&api::board_memo_describe(b["memo"].as_str().unwrap()).unwrap());
+    // classes: omitted = 0/0, given = signed into the entry; half or unknown classes refused
+    let ea = jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(a["memo"].as_str().unwrap()))
+        .unwrap();
+    assert_eq!((ea.discount_bucket, ea.tenor_bucket), (0, 0));
+    let eb = jitsuin_core::BoardEntry::from_memo_bytes(&base64_decode(b["memo"].as_str().unwrap()))
+        .unwrap();
+    assert_eq!((eb.discount_bucket, eb.tenor_bucket), (2, 3));
+    for (d, t) in [(Some(2), None), (Some(99), Some(3))] {
+        assert!(api::supplier_register_entry(
+            &"01".repeat(32),
+            &inv_b64,
+            &fin_a,
+            &"0a".repeat(32),
+            d,
+            t
+        )
+        .is_err());
+    }
     assert_eq!(da["nullifier"], db["nullifier"]);
     assert_ne!(da["financier_commitment"], db["financier_commitment"]);
     let sig = api::buyer_sign_invoice(MASTER, 0, &inv_b64).unwrap();
@@ -366,6 +404,8 @@ fn financier_commitment_is_derived_and_matches_the_supplier_entry() {
             &inv_b64,
             &fin,
             o["salt"].as_str().unwrap(),
+            None,
+            None,
         )
         .unwrap(),
     );
@@ -413,6 +453,8 @@ fn a_repaid_history_verifies_and_a_hidden_invoice_is_caught() {
                 &fin_pk,
                 &"0a".repeat(32),
                 &cert,
+                Some(2),
+                Some(3),
             )
             .unwrap(),
         );
