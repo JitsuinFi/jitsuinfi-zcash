@@ -4,6 +4,10 @@ Zcash protocol and integration layer for **JitsuinFi**, private invoice financin
 
 > Zcash stops double-spending. JitsuinFi stops double-financing.
 
+No server, no admin, no login: the registry is one Zcash address and a viewing key we published on purpose. Before paying, any lender looks up an invoice's fingerprint on that board and learns only whether it was already financed.
+
+**What it does not stop.** A fake invoice that the buyer itself co-signs is out of scope: the buyer's signature is real, so the board sees a new invoice. Nor does it stop one delivery split into two invoices the buyer both signs, or a financier that skips the board. Credit diligence still applies.
+
 Crates:
 - `crates/jitsuin-core`: canonical invoices, nullifier, board entries, receipts, Jitsuin Seal (chained multi-party signatures), assignment letter, settlement, buyer history chain, verification bundle, double-signature proof. Pure logic, no network.
 - `crates/jitsuin-wallet`: wallet backend wrapping `zcash-devtool` (sync, ZIP-321 payments with memos, transaction listing).
@@ -188,4 +192,4 @@ Expected output: [`examples/index/expected-output.txt`](examples/index/expected-
 
 `jitsuin_core::index::classes_for(face, advance, advance_day, due_day)` gives the two codes of a deal. Entries are `0/0` (not disclosed) by default: anyone holding the invoice (the buyer, a financier that was shown it) can compute `N` and read that entry's classes, so the supplier opts in before its classes join the index. A financier accepts either the deal's classes or `0/0`. Both are disclosed or neither; other values are counted as invalid and left out.
 
-Status: in development for ZECATHON 2026. Development runs on Zcash testnet (NU7).
+Status: in development for ZECATHON 2026. Everything runs on Zcash testnet, in the Ironwood shielded pool (on mainnet, Ironwood is live since the NU6.3 upgrade of 28 July 2026).
