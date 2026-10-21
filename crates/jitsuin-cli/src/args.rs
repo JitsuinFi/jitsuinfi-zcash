@@ -27,6 +27,8 @@ CHECKS (verify, repeatable):
     --proof <FILE>          Double-signature proof (JTSP), binary or base64url text.
     --exhibit <FILE>        Exhibit A (JTSX): the double signature without the invoice.
     --bundle <FILE>         Verification bundle (JTSB), binary or base64url text.
+    --evidence <FILE>       Repayment evidence (JTSE) from a financier's console: claims and
+                            receipts checked, the repayment status recomputed.
 
 INDEX:
     --k <K>                 Smallest number of invoices a class needs to be shown
@@ -102,6 +104,7 @@ pub struct VerifyArgs {
     pub proofs: Vec<PathBuf>,
     pub exhibits: Vec<PathBuf>,
     pub bundles: Vec<PathBuf>,
+    pub evidences: Vec<PathBuf>,
     pub json: bool,
 }
 
@@ -140,6 +143,7 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
     let mut proofs = Vec::new();
     let mut exhibits = Vec::new();
     let mut bundles = Vec::new();
+    let mut evidences = Vec::new();
     let mut k = None;
     let mut json = false;
 
@@ -178,12 +182,13 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
             "--devtool" => set(&mut devtool, name, PathBuf::from(value()?))?,
             "--lightwalletd" => set(&mut lightwalletd, name, value()?)?,
             "--save-board" => set(&mut save_board, name, PathBuf::from(value()?))?,
-            "--proof" | "--exhibit" | "--bundle" if command != "verify" => {
+            "--proof" | "--exhibit" | "--bundle" | "--evidence" if command != "verify" => {
                 return Err(format!("{name} only applies to `jitsuin verify`"))
             }
             "--proof" => proofs.push(PathBuf::from(value()?)),
             "--exhibit" => exhibits.push(PathBuf::from(value()?)),
             "--bundle" => bundles.push(PathBuf::from(value()?)),
+            "--evidence" => evidences.push(PathBuf::from(value()?)),
             "--k" if command != "index" => return Err("--k only applies to `jitsuin index`".into()),
             "--k" => {
                 let v = value()?;
@@ -243,6 +248,7 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
             proofs,
             exhibits,
             bundles,
+            evidences,
             json,
         })),
     })

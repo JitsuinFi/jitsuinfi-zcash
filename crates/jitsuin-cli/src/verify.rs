@@ -13,6 +13,7 @@ use jitsuin_core::bundle::BUNDLE_MAGIC;
 use jitsuin_core::exhibit::{Exhibit, EXHIBIT_MAGIC};
 use jitsuin_core::proof::PROOF_MAGIC;
 use jitsuin_core::{Bundle, ChainStatus, DoubleSignProof, EntryAt, EntryKind};
+use jitsuin_flow::settlement::{Evidence, EVIDENCE_MAGIC};
 use serde_json::{json, Value};
 
 use crate::board::Board;
@@ -47,6 +48,7 @@ pub enum DocKind {
     Proof,
     Exhibit,
     Bundle,
+    Evidence,
 }
 
 /// Checks for one proof or bundle file.
@@ -70,6 +72,8 @@ impl DocReport {
             (DocKind::Exhibit, false) => "EXHIBIT DOES NOT HOLD",
             (DocKind::Bundle, true) => "DEAL VERIFIED",
             (DocKind::Bundle, false) => "DEAL DOES NOT HOLD",
+            (DocKind::Evidence, true) => "REPAYMENT EVIDENCE HOLDS",
+            (DocKind::Evidence, false) => "REPAYMENT EVIDENCE DOES NOT HOLD",
         }
     }
 }
@@ -101,6 +105,7 @@ pub fn run(
     proofs: &[PathBuf],
     exhibits: &[PathBuf],
     bundles: &[PathBuf],
+    evidences: &[PathBuf],
 ) -> Result<Report, String> {
     let mut docs = Vec::new();
     for path in exhibits {
@@ -130,7 +135,54 @@ pub fn run(
             checks: check_bundle(&bundle, &board),
         });
     }
+    for path in evidences {
+        let e = Evidence::from_bytes(&read_doc(path, EVIDENCE_MAGIC)?)
+            .map_err(|e| format!("{}: not a repayment evidence file: {e}", path.display()))?;
+        docs.push(DocReport {
+            kind: DocKind::Evidence,
+            path: path.clone(),
+            checks: check_evidence(&e),
+        });
+    }
     Ok(Report { board, docs })
+}
+
+/// HNK-26.T13: a repayment evidence file needs no board: every claim and receipt is checked with
+/// the buyer's key and the status is recomputed from the file. Values and heights are the
+/// financier's reading of its wallet; only its viewing key confirms them.
+pub fn check_evidence(e: &Evidence) -> Vec<Check> {
+    match e.check() {
+        Err(err) => vec![Check {
+            status: Status::Fail,
+            name: "signatures",
+            detail: format!("a claim or receipt does not hold: {err}"),
+        }],
+        Ok((r, status)) => vec![
+            Check {
+                status: Status::Pass,
+                name: "signatures",
+                detail: format!(
+                    "{} buyer claim(s) and {} repayment receipt(s) signed by the buyer of N {}",
+                    e.claims.len(),
+                    r.payments.len() + r.rejected.len(),
+                    &hex(&e.doc.nullifier)[..16]
+                ),
+            },
+            Check {
+                status: Status::Info,
+                name: "repayment",
+                detail: format!(
+                    "{status:?}: {} of {} zat paid and mined, {} pending, {} rejected receipt(s); day {}, grace {} days",
+                    r.paid_zat,
+                    e.doc.amount_zat,
+                    r.pending_zat,
+                    r.rejected.len(),
+                    e.today,
+                    e.grace_days
+                ),
+            },
+        ],
+    }
 }
 
 /// A proof or bundle file: raw bytes starting with `magic`, or base64url text (the form the web
@@ -440,6 +492,7 @@ pub fn render_text(r: &Report) -> String {
             DocKind::Proof => "Proof",
             DocKind::Exhibit => "Exhibit",
             DocKind::Bundle => "Bundle",
+            DocKind::Evidence => "Evidence",
         };
         s += &format!("\n{what}  {}\n", d.path.display());
         for c in &d.checks {
@@ -482,7 +535,7 @@ pub fn render_json(r: &Report) -> Value {
             "txid": x.txid, "output_index": x.output_index, "reason": x.reason,
         })).collect::<Vec<_>>(),
         "documents": r.docs.iter().map(|d| json!({
-            "kind": match d.kind { DocKind::Proof => "proof", DocKind::Exhibit => "exhibit", DocKind::Bundle => "bundle" },
+            "kind": match d.kind { DocKind::Proof => "proof", DocKind::Exhibit => "exhibit", DocKind::Bundle => "bundle", DocKind::Evidence => "evidence" },
             "path": d.path.display().to_string(),
             "pass": d.passed(),
             "conclusion": d.conclusion(),
@@ -562,5 +615,47 @@ fn info(name: &'static str, detail: String) -> Check {
         status: Status::Info,
         name,
         detail,
+    }
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+
+    #[test]
+    fn a_repayment_evidence_file_is_checked_without_the_board() {
+        use jitsuin_core::{Receipt, ReceiptKind, SettlementDoc};
+        use jitsuin_flow::settlement::EvidencePayment;
+        let buyer = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let doc = SettlementDoc {
+            nullifier: [7; 32],
+            amount_zat: 50_000,
+            due_date: 100,
+        };
+        let mut e = Evidence {
+            doc,
+            buyer_pk: buyer.verifying_key().to_bytes(),
+            today: 120,
+            grace_days: 7,
+            claims: vec![doc.buyer_seal(&buyer)],
+            payments: vec![EvidencePayment {
+                txid: "aa".into(),
+                mined_height: Some(10),
+                output_index: 0,
+                received_zat: 20_000,
+                receipt: Receipt::sign(&buyer, ReceiptKind::Repayment, doc.nullifier, 20_000, 99)
+                    .unwrap(),
+            }],
+        };
+        let c = check_evidence(&e);
+        assert_eq!(c[0].status, Status::Pass);
+        assert!(
+            c[1].detail.starts_with("Disputed: 20000 of 50000"),
+            "{}",
+            c[1].detail
+        );
+        // a claim signed by someone else does not hold
+        e.claims = vec![doc.buyer_seal(&ed25519_dalek::SigningKey::from_bytes(&[3; 32]))];
+        assert_eq!(check_evidence(&e)[0].status, Status::Fail);
     }
 }
