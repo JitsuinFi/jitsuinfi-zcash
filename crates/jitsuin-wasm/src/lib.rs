@@ -228,6 +228,18 @@ pub fn verify_exhibit_on_board(
     ))
 }
 
+/// A QR code (SVG) of a short text, such as a contact card.
+#[wasm_bindgen(js_name = qrSvg)]
+pub fn qr_svg(text: &str) -> Result<String, JsError> {
+    js(api::qr_svg(text))
+}
+
+/// A ZIP-321 payment request without memo and its QR, as JSON `{uri, qr_svg}`.
+#[wasm_bindgen(js_name = paymentRequest)]
+pub fn payment_request(address: &str, amount_zat: u64) -> Result<String, JsError> {
+    js(api::payment_request(address, amount_zat))
+}
+
 #[wasm_bindgen(js_name = rateIndex)]
 pub fn rate_index(board_json: &str, k: u32) -> Result<String, JsError> {
     js(api::rate_index(board_json, k))

@@ -869,3 +869,16 @@ fn message_signatures_cover_only_relay_headers() {
         "171e3bf4c1a8af89725083cc6ceac9bb9400ebcf9caac626f1b6779e667559c2"
     );
 }
+
+#[test]
+fn qr_codes_for_cards_and_deposits() {
+    assert!(api::qr_svg("jitsuin-contact-v1:abc")
+        .unwrap()
+        .starts_with("<?xml"));
+    assert!(api::qr_svg("").is_err());
+    let r: Value =
+        serde_json::from_str(&api::payment_request("utest1abc", 150_000).unwrap()).unwrap();
+    assert_eq!(r["uri"], "zcash:utest1abc?amount=0.0015");
+    assert!(r["qr_svg"].as_str().unwrap().contains("<svg"));
+    assert!(api::payment_request("utest1abc", 0).is_err());
+}

@@ -212,6 +212,31 @@ pub fn buyer_repayment(
     Ok(json!({ "uri": uri, "qr_svg": svg, "memo": b64(&memo) }).to_string())
 }
 
+/// A QR code (SVG) of any short text: a contact card, a fund card (HNK-22.T5, HNK-30.T22).
+pub fn qr_svg(text: &str) -> ApiResult<String> {
+    if text.is_empty() || text.len() > 1200 {
+        return Err("the text for a QR code is 1 to 1200 characters".into());
+    }
+    Ok(
+        QrCode::with_error_correction_level(text.as_bytes(), EcLevel::M)
+            .map_err(err)?
+            .render::<svg::Color<'_>>()
+            .min_dimensions(320, 320)
+            .build(),
+    )
+}
+
+/// A plain ZIP-321 payment request and its QR (HNK-30.T22: a deposit into a fund), no memo.
+pub fn payment_request(address: &str, amount_zat: u64) -> ApiResult<String> {
+    let uri = zip321_uri(&[Payment {
+        address: address.trim().to_string(),
+        amount_zat,
+        memo: None,
+    }])
+    .map_err(err)?;
+    Ok(json!({ "uri": uri, "qr_svg": qr_svg(&uri)? }).to_string())
+}
+
 /// History certificate for the invoice at `index`, chained after `prev_b64` ("" for index 0).
 pub fn buyer_history_cert(
     master_hex: &str,
