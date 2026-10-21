@@ -61,6 +61,12 @@ pub enum Error {
     InvalidMailboxKey,
     /// A sealed message is too short, tampered with, or not for this mailbox (HNK-23.T2).
     SealedMessage,
+    /// Two leaves of the fund's unit tree share an id, or there are too many leaves (HNK-15.T1).
+    UnitTree,
+    /// Units add up past the largest amount.
+    UnitOverflow,
+    /// A fund path is not whole 41-byte steps, too deep, or has an unknown side byte.
+    BadPath,
 }
 
 impl fmt::Display for Error {
@@ -95,6 +101,9 @@ impl fmt::Display for Error {
             Error::InvalidBucket => write!(f, "discount/tenor class is not defined"),
             Error::InvalidMailboxKey => write!(f, "not a usable X25519 mailbox key"),
             Error::SealedMessage => write!(f, "sealed message does not open with this mailbox key"),
+            Error::UnitTree => write!(f, "unit tree has a repeated leaf id or too many leaves"),
+            Error::UnitOverflow => write!(f, "units add up past the largest amount"),
+            Error::BadPath => write!(f, "not a fund path"),
         }
     }
 }
