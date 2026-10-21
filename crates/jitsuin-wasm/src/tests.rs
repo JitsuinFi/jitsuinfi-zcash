@@ -882,3 +882,15 @@ fn qr_codes_for_cards_and_deposits() {
     assert!(r["qr_svg"].as_str().unwrap().contains("<svg"));
     assert!(api::payment_request("utest1abc", 0).is_err());
 }
+
+#[test]
+fn the_buyer_signs_a_header_with_its_invoice_key() {
+    let master = hex(&[0x42; 32]);
+    let keys: Value = serde_json::from_str(&api::buyer_keys(&master, 3).unwrap()).unwrap();
+    let mut bytes = api::MESSAGE_SIG_DOMAIN.to_vec();
+    bytes.extend_from_slice(b"{}");
+    let r: Value =
+        serde_json::from_str(&api::buyer_message_sign(&master, 3, &bytes).unwrap()).unwrap();
+    assert_eq!(r["signer"], keys["invoice_pk"]);
+    assert!(api::buyer_message_sign(&master, 3, b"anything else").is_err());
+}

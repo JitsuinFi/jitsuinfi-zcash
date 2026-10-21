@@ -1053,12 +1053,19 @@ pub fn mailbox_id_of(mailbox_pk_hex: &str) -> ApiResult<String> {
 }
 
 /// Domain tag every relay message signature starts with (jitsuinfi-frontend relay-message.ts).
-const MESSAGE_SIG_DOMAIN: &[u8] = b"JitsuinMsgSig_v1\n";
+pub(crate) const MESSAGE_SIG_DOMAIN: &[u8] = b"JitsuinMsgSig_v1\n";
 
 /// Signs the signing bytes of a relay message header (HNK-23.T7) with a party key, here the
 /// supplier's per-invoice key, without the key leaving wasm. Only bytes that start with the
 /// message domain tag are signed, so the key cannot be made to sign anything else (an invoice, a
 /// seal or a board entry). Returns the public key and the signature (hex).
+/// HNK-25.T2 (BL-D22-01): signs a relay header with the buyer's invoice key `index`, so a
+/// `key.invoice_pk` message proves it comes from the holder of that key; only header bytes.
+pub fn buyer_message_sign(master_hex: &str, index: u32, signing_bytes: &[u8]) -> ApiResult<String> {
+    let key = identity(master_hex)?.invoice_key(index);
+    message_sign(&hex(&key.to_bytes()), signing_bytes)
+}
+
 pub fn message_sign(secret_hex: &str, signing_bytes: &[u8]) -> ApiResult<String> {
     if !signing_bytes.starts_with(MESSAGE_SIG_DOMAIN) {
         return Err("only relay message headers are signed here".into());
