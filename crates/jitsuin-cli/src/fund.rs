@@ -6,12 +6,15 @@
 //!
 //! Limits, printed with every report: the receivables are what the manager declared in its notes
 //! (face value and due date are not tied to the advance or to a real invoice), so a breach only
-//! shows once a receivable is overdue; inclusion of the member's own deposit in the root needs the
-//! Merkle path (HNK-15.T1).
+//! shows once a receivable is overdue. With `--path`, the member's units are checked against the
+//! latest manager-signed root on chain: the period's path the fund sent them (`fund.merkle_path`,
+//! saved from the member page) must end in that root and add up to its total (HNK-29.T2, D-49).
+//! Since D-49 the root's total counts units at par (1 zat each), so SOLVENT means "not below par".
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use jitsuin_core::units;
 use jitsuin_flow::fund::{
     member_view, solvency, FundView, ReceivableStatus, Solvency, SolvencyPolicy,
 };
@@ -37,12 +40,15 @@ USAGE:
     --grace-days <DAYS>     Days after the due date before a receivable is overdue [default 7]
     --haircut <PERCENT>     Share of an overdue receivable written off [default 100]
     --today <DAYS>          Date as days since 1970-01-01 [default: today]
+    --path <FILE>           The fund.merkle_path you saved from the member page: checks that
+                            your units are under the latest root on chain.
     --wallet-dir <DIR>      Watch-only wallet [default: wallet-fund-<network>]
     --devtool <PATH>        zcash-devtool binary [default: $JITSUIN_DEVTOOL or zcash-devtool]
     --json                  Machine-readable report.
 
 EXIT STATUS:
-    0 solvent, 1 not solvent or no liability root yet, 2 usage, input or network error.
+    0 solvent (and, with --path, your units included), 1 not solvent, no liability root yet, or
+    not included, 2 usage, input or network error.
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +63,7 @@ pub struct FundArgs {
     pub wallet_dir: PathBuf,
     pub devtool: PathBuf,
     pub json: bool,
+    pub path: Option<PathBuf>,
 }
 
 fn unhex32(s: &str) -> Result<[u8; 32], String> {
@@ -85,7 +92,7 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Option<FundAr
     let mut it = args.iter();
     let (mut ufvk, mut manager_pk, mut birthday, mut grace, mut haircut, mut day) =
         (None, None, None, None, None, None);
-    let (mut wallet_dir, mut devtool, mut json) = (None, None, false);
+    let (mut wallet_dir, mut devtool, mut json, mut path) = (None, None, false, None);
     while let Some(arg) = it.next() {
         let (name, inline) = match arg.split_once('=') {
             Some((n, v)) if n.starts_with("--") => (n, Some(v.to_string())),
@@ -123,6 +130,7 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Option<FundAr
             "--today" => set(&mut day, name, number(value()?)? as u32)?,
             "--wallet-dir" => set(&mut wallet_dir, name, PathBuf::from(value()?))?,
             "--devtool" => set(&mut devtool, name, PathBuf::from(value()?))?,
+            "--path" => set(&mut path, name, PathBuf::from(value()?))?,
             _ => {
                 return Err(format!(
                     "unknown option `{arg}` (try `jitsuin fund --help`)"
@@ -148,6 +156,7 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Option<FundAr
             )
         }),
         json,
+        path,
         ufvk,
         network,
     }))
@@ -186,9 +195,84 @@ pub fn run(a: &FundArgs) -> Result<(FundView, Option<Solvency>), String> {
     Ok((view, verdict))
 }
 
-/// 0 solvent, 1 not solvent or no root yet.
-pub fn passed(verdict: &Option<Solvency>) -> bool {
-    verdict.is_some_and(|s| s.solvent)
+/// The member's units against the latest root on chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inclusion {
+    pub period: u32,
+    pub units: u64,
+    pub included: bool,
+    pub why: String,
+}
+
+/// Checks a saved `fund.merkle_path` body against the latest manager-signed root in `view`.
+pub fn inclusion(path_json: &str, view: &FundView) -> Result<Inclusion, String> {
+    let b: Value =
+        serde_json::from_str(path_json).map_err(|_| "the path file is not JSON".to_string())?;
+    let b = if b["type"] == "fund.merkle_path" {
+        &b["body"]
+    } else {
+        &b
+    };
+    let field = |k: &str| b[k].as_u64().ok_or(format!("the path file has no {k}"));
+    let hex32 = |k: &str| -> Result<[u8; 32], String> {
+        let s = b[k].as_str().ok_or(format!("the path file has no {k}"))?;
+        let v = unhex(s)
+            .filter(|v| v.len() == 32)
+            .ok_or(format!("{k} is not 32 bytes of hex"))?;
+        Ok(v.try_into().expect("32 bytes"))
+    };
+    let (period, units, total) = (field("period")? as u32, field("units")?, field("total")?);
+    let (leaf, root) = (hex32("leaf_id")?, hex32("root")?);
+    let steps = b["path"]
+        .as_str()
+        .and_then(unhex)
+        .ok_or("the path file has no path")
+        .and_then(|p| units::path_from_bytes(&p).map_err(|_| "not a fund path"))?;
+    let out = |included: bool, why: String| Inclusion {
+        period,
+        units,
+        included,
+        why,
+    };
+    if !units::verify(&leaf, units, &steps, &root, total) {
+        return Ok(out(
+            false,
+            "the path does not add up to the root it names".into(),
+        ));
+    }
+    Ok(match &view.root {
+        None => out(false, "no liability root on chain yet".into()),
+        Some((r, _)) if r.period != period => out(
+            false,
+            format!(
+                "the path is for period {period}; the latest root on chain is period {}",
+                r.period
+            ),
+        ),
+        Some((r, _)) if r.root != root || r.total_zat != total => out(
+            false,
+            "the root the fund sent you is not the one it signed on chain".into(),
+        ),
+        Some(_) => out(
+            true,
+            format!("your {units} units are in the period {period} root on chain"),
+        ),
+    })
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// 0 solvent (and included, when a path was checked), 1 otherwise.
+pub fn passed(verdict: &Option<Solvency>, inc: Option<&Inclusion>) -> bool {
+    verdict.is_some_and(|s| s.solvent) && inc.is_none_or(|i| i.included)
 }
 
 fn hex(b: &[u8]) -> String {
@@ -205,9 +289,15 @@ fn status(s: ReceivableStatus) -> &'static str {
 
 const LIMITS: &str =
     "Receivables are the manager's own notes (face value and due date); a breach shows \
-only once a receivable is overdue. Inclusion of your deposit in the root needs your Merkle path.";
+only once a receivable is overdue. Liabilities count units at par (1 zat each). Inclusion of \
+your units needs your Merkle path (--path).";
 
-pub fn render_text(a: &FundArgs, view: &FundView, verdict: &Option<Solvency>) -> String {
+pub fn render_text(
+    a: &FundArgs,
+    view: &FundView,
+    verdict: &Option<Solvency>,
+    inc: Option<&Inclusion>,
+) -> String {
     let mut out = format!(
         "Fund     {} watch-only wallet {}, day {}, grace {} days, haircut {}%\n",
         a.network.name(),
@@ -246,11 +336,27 @@ pub fn render_text(a: &FundArgs, view: &FundView, verdict: &Option<Solvency>) ->
             if s.solvent { "SOLVENT" } else { "NOT SOLVENT" }
         ),
     };
+    if let Some(i) = inc {
+        out += &format!(
+            "Units    {}: {}\n",
+            if i.included {
+                "INCLUDED"
+            } else {
+                "NOT INCLUDED"
+            },
+            i.why
+        );
+    }
     out += &format!("Limits   {LIMITS}\n");
     out
 }
 
-pub fn render_json(a: &FundArgs, view: &FundView, verdict: &Option<Solvency>) -> Value {
+pub fn render_json(
+    a: &FundArgs,
+    view: &FundView,
+    verdict: &Option<Solvency>,
+    inc: Option<&Inclusion>,
+) -> Value {
     json!({
         "network": a.network.name(),
         "today": a.today,
@@ -274,6 +380,12 @@ pub fn render_json(a: &FundArgs, view: &FundView, verdict: &Option<Solvency>) ->
             "open_zat": s.open_zat,
             "overdue_zat": s.overdue_zat,
             "solvent": s.solvent,
+        })),
+        "inclusion": inc.map(|i| json!({
+            "period": i.period,
+            "units": i.units,
+            "included": i.included,
+            "why": i.why,
         })),
         "limits": LIMITS,
     })
@@ -354,8 +466,8 @@ mod tests {
                 overdue_haircut_pct: 100,
             },
         );
-        assert!(!passed(&none));
-        assert!(render_text(&a, &view, &none).contains("NO ROOT"));
+        assert!(!passed(&none, None));
+        assert!(render_text(&a, &view, &none, None).contains("NO ROOT"));
         let s = Some(Solvency {
             cash_zat: 100_000,
             open_zat: 40_000,
@@ -365,11 +477,59 @@ mod tests {
             period: 3,
             solvent: true,
         });
-        assert!(passed(&s));
-        let text = render_text(&a, &view, &s);
+        assert!(passed(&s, None));
+        let text = render_text(&a, &view, &s, None);
         assert!(text.contains("SOLVENT") && text.contains("Limits"));
-        let j = render_json(&a, &view, &s);
+        let j = render_json(&a, &view, &s, None);
         assert_eq!(j["verdict"]["solvent"], true);
         assert_eq!(j["receivables"][0]["status"], "open");
+    }
+
+    #[test]
+    fn a_saved_path_is_checked_against_the_root_on_chain() {
+        use ed25519_dalek::SigningKey;
+        use jitsuin_core::LiabilityRoot;
+        let leaves: Vec<([u8; 32], u64)> = (1..=3u8)
+            .map(|i| (units::leaf_id(&[i; 32]), 1_000 * i as u64))
+            .collect();
+        let t = units::UnitTree::build(&leaves).unwrap();
+        let (root, total) = t.root();
+        let body = json!({
+            "period": 4,
+            "leaf_id": hex(&leaves[1].0),
+            "units": 2_000,
+            "root": hex(&root),
+            "total": total,
+            "path": hex(&units::path_to_bytes(&t.path(&leaves[1].0).unwrap())),
+        })
+        .to_string();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let mut view = FundView {
+            cash_zat: 0,
+            receivables: vec![],
+            root: None,
+            ignored_roots: 0,
+        };
+        assert!(!inclusion(&body, &view).unwrap().included);
+        view.root = Some((LiabilityRoot::sign(&key, 4, root, total), "t".into()));
+        let ok = inclusion(&body, &view).unwrap();
+        assert!(ok.included, "{}", ok.why);
+        view.root = Some((LiabilityRoot::sign(&key, 5, root, total), "t".into()));
+        assert!(inclusion(&body, &view).unwrap().why.contains("period 5"));
+        view.root = Some((LiabilityRoot::sign(&key, 4, [1; 32], total), "t".into()));
+        assert!(!inclusion(&body, &view).unwrap().included);
+        let lied = body.replace("\"units\":2000", "\"units\":2001");
+        assert!(!inclusion(&lied, &view).unwrap().included);
+        let s = Some(Solvency {
+            cash_zat: 1,
+            open_zat: 0,
+            overdue_zat: 0,
+            assets_zat: 9_000,
+            liabilities_zat: 6_000,
+            period: 4,
+            solvent: true,
+        });
+        let not = inclusion(&lied, &view).unwrap();
+        assert!(!passed(&s, Some(&not)));
     }
 }
