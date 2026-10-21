@@ -578,6 +578,18 @@ pub fn mailbox_id(mailbox_pk_hex: &str) -> Result<String, JsError> {
     js(api::mailbox_id_of(mailbox_pk_hex))
 }
 
+/// Signs a relay header with the buyer's invoice key `index` from the master (wiped).
+#[wasm_bindgen(js_name = buyerMessageSignBytes)]
+pub fn buyer_message_sign_bytes(
+    master: &mut [u8],
+    index: u32,
+    signing_bytes: &[u8],
+) -> Result<String, JsError> {
+    js(api::with_secret(master, |m| {
+        api::buyer_message_sign(m, index, signing_bytes)
+    }))
+}
+
 /// Signs a relay message header's signing bytes with a party key (wiped); refuses any other bytes.
 #[wasm_bindgen(js_name = messageSignBytes)]
 pub fn message_sign_bytes(secret: &mut [u8], signing_bytes: &[u8]) -> Result<String, JsError> {
