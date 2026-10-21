@@ -6,8 +6,11 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use jitsuin_board::{bundle_on_board, proof_on_board, BoardRecord, Lookup, Position};
+use jitsuin_board::{
+    bundle_on_board, exhibit_on_board, proof_on_board, BoardRecord, Lookup, Position,
+};
 use jitsuin_core::bundle::BUNDLE_MAGIC;
+use jitsuin_core::exhibit::{Exhibit, EXHIBIT_MAGIC};
 use jitsuin_core::proof::PROOF_MAGIC;
 use jitsuin_core::{Bundle, ChainStatus, DoubleSignProof, EntryAt, EntryKind};
 use serde_json::{json, Value};
@@ -42,6 +45,7 @@ pub struct Check {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocKind {
     Proof,
+    Exhibit,
     Bundle,
 }
 
@@ -62,6 +66,8 @@ impl DocReport {
         match (self.kind, self.passed()) {
             (DocKind::Proof, true) => "DOUBLE FINANCING PROVEN",
             (DocKind::Proof, false) => "PROOF DOES NOT HOLD",
+            (DocKind::Exhibit, true) => "DOUBLE SIGNATURE ON THE BOARD (exhibit)",
+            (DocKind::Exhibit, false) => "EXHIBIT DOES NOT HOLD",
             (DocKind::Bundle, true) => "DEAL VERIFIED",
             (DocKind::Bundle, false) => "DEAL DOES NOT HOLD",
         }
@@ -90,8 +96,22 @@ impl Report {
     }
 }
 
-pub fn run(board: Board, proofs: &[PathBuf], bundles: &[PathBuf]) -> Result<Report, String> {
+pub fn run(
+    board: Board,
+    proofs: &[PathBuf],
+    exhibits: &[PathBuf],
+    bundles: &[PathBuf],
+) -> Result<Report, String> {
     let mut docs = Vec::new();
+    for path in exhibits {
+        let exhibit = Exhibit::from_bytes(&read_doc(path, EXHIBIT_MAGIC)?)
+            .map_err(|e| format!("{}: not an exhibit: {e}", path.display()))?;
+        docs.push(DocReport {
+            kind: DocKind::Exhibit,
+            path: path.clone(),
+            checks: check_exhibit(&exhibit, &board.collected.records),
+        });
+    }
     for path in proofs {
         let proof = DoubleSignProof::from_bytes(&read_doc(path, PROOF_MAGIC)?)
             .map_err(|e| format!("{}: not a double-signature proof: {e}", path.display()))?;
@@ -180,6 +200,67 @@ pub fn check_proof(proof: &DoubleSignProof, records: &[BoardRecord]) -> Vec<Chec
         ));
     }
     debug_assert_eq!(out.iter().all(|c| c.status != Status::Fail), claims.holds());
+    out
+}
+
+/// Exhibit A (HNK-30.T5): the same board claims as a proof, without the invoice. It cannot say
+/// which invoice it is about; that line is context, not a failure.
+pub fn check_exhibit(exhibit: &Exhibit, records: &[BoardRecord]) -> Vec<Check> {
+    let mut out = Vec::new();
+    let report = match exhibit.verify() {
+        Ok(r) => r,
+        Err(e) => {
+            out.push(fail("signatures", e.to_string()));
+            return out;
+        }
+    };
+    out.push(pass(
+        "signatures",
+        format!(
+            "key {} signed N {} for 2 different financiers ({} and {})",
+            short(&report.supplier_pk),
+            short(&report.nullifier),
+            short(&report.first_commitment),
+            short(&report.second_commitment),
+        ),
+    ));
+    out.push(info(
+        "invoice",
+        "not in the exhibit; a holder of the invoice checks that N and the key are its own".into(),
+    ));
+    let claims = exhibit_on_board(exhibit, records);
+    match (&exhibit.first_at, claims.first) {
+        (Some(at), Some(ok)) => out.push(check(
+            ok,
+            "first entry",
+            format!("on the board at {}", where_(at)),
+            format!("not on the board at {}", where_(at)),
+        )),
+        _ => out.push(fail(
+            "first entry",
+            "the exhibit gives no board position for the first entry".into(),
+        )),
+    }
+    match (&exhibit.second_at, claims.second) {
+        (Some(at), Some(ok)) => out.push(check(
+            ok,
+            "second entry",
+            format!("on the board at {}", where_(at)),
+            format!("not on the board at {}", where_(at)),
+        )),
+        _ => out.push(info(
+            "second entry",
+            "offered off-chain to the financier that caught it, never posted".into(),
+        )),
+    }
+    if let Some(ok) = claims.ordered {
+        out.push(check(
+            ok,
+            "order",
+            "the first entry came before the second".into(),
+            "the \"first\" entry is not before the second".into(),
+        ));
+    }
     out
 }
 
@@ -357,6 +438,7 @@ pub fn render_text(r: &Report) -> String {
     for d in &r.docs {
         let what = match d.kind {
             DocKind::Proof => "Proof",
+            DocKind::Exhibit => "Exhibit",
             DocKind::Bundle => "Bundle",
         };
         s += &format!("\n{what}  {}\n", d.path.display());
@@ -400,7 +482,7 @@ pub fn render_json(r: &Report) -> Value {
             "txid": x.txid, "output_index": x.output_index, "reason": x.reason,
         })).collect::<Vec<_>>(),
         "documents": r.docs.iter().map(|d| json!({
-            "kind": match d.kind { DocKind::Proof => "proof", DocKind::Bundle => "bundle" },
+            "kind": match d.kind { DocKind::Proof => "proof", DocKind::Exhibit => "exhibit", DocKind::Bundle => "bundle" },
             "path": d.path.display().to_string(),
             "pass": d.passed(),
             "conclusion": d.conclusion(),

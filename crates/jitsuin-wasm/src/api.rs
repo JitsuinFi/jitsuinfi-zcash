@@ -341,6 +341,67 @@ pub fn verify_proof_on_board(proof_b64: &str, board_json: &str) -> ApiResult<Str
     .to_string())
 }
 
+/// Exhibit A of a full proof (HNK-30.T5): the proof is verified, then the invoice is dropped, so
+/// the exhibit carries only N, the supplier key and the two entries with their positions.
+pub fn exhibit_from_proof(proof_b64: &str) -> ApiResult<String> {
+    let p = DoubleSignProof::from_bytes(&unb64(proof_b64)?).map_err(err)?;
+    let x = jitsuin_core::Exhibit::from_proof(&p).map_err(err)?;
+    Ok(b64(&x.to_bytes().map_err(err)?))
+}
+
+/// An Exhibit A checked in the browser: the signatures, then every board position it claims
+/// (same rule as `jitsuin verify --exhibit`). With the invoice (optional), also whether the key
+/// is the supplier key of that invoice; without it, `binds` is null: the exhibit alone cannot
+/// say which invoice it is about.
+pub fn verify_exhibit_on_board(
+    exhibit_b64: &str,
+    board_json: Option<String>,
+    invoice_b64: Option<String>,
+) -> ApiResult<String> {
+    let x = jitsuin_core::Exhibit::from_bytes(&unb64(exhibit_b64)?).map_err(err)?;
+    let at = |a: &Option<jitsuin_core::EntryAt>| {
+        a.as_ref()
+            .map(|a| json!({ "txid": a.txid, "height": a.height, "tx_index": a.tx_index, "output_index": a.output_index }))
+            .unwrap_or(Value::Null)
+    };
+    let signatures = match x.verify() {
+        Ok(r) => json!({
+            "ok": true,
+            "nullifier": hex(&r.nullifier),
+            "supplier_pk": hex(&r.supplier_pk),
+            "first_commitment": hex(&r.first_commitment),
+            "second_commitment": hex(&r.second_commitment),
+        }),
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    };
+    let (claims, entries) = match board_json.as_deref() {
+        Some(b) => {
+            let c = board(b)?;
+            (
+                Some(jitsuin_board::exhibit_on_board(&x, &c.records)),
+                Some(c.records.len()),
+            )
+        }
+        None => (None, None),
+    };
+    let binds = match invoice_b64.as_deref() {
+        Some(i) => Some(x.binds(&invoice(i)?).map_err(err)?),
+        None => None,
+    };
+    let holds =
+        signatures["ok"] == true && claims.is_some_and(|c| c.holds()) && binds != Some(false);
+    Ok(json!({
+        "holds": holds,
+        "signatures": signatures,
+        "first": { "claimed_at": at(&x.first_at), "on_board": claims.and_then(|c| c.first) },
+        "second": { "claimed_at": at(&x.second_at), "on_board": claims.and_then(|c| c.second) },
+        "ordered": claims.and_then(|c| c.ordered),
+        "board_entries": entries,
+        "binds": binds,
+    })
+    .to_string())
+}
+
 /// The public rate index of board data (HNK-28.T3, BL-D28-05): the same numbers and JSON shape
 /// as `jitsuin index --json`, without its version and board origin.
 pub fn rate_index(board_json: &str, k: u32) -> ApiResult<String> {

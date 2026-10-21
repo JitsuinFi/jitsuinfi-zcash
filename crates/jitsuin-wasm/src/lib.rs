@@ -210,6 +210,24 @@ pub fn verify_proof_on_board(proof_b64: &str, board_json: &str) -> Result<String
     js(api::verify_proof_on_board(proof_b64, board_json))
 }
 
+#[wasm_bindgen(js_name = exhibitFromProof)]
+pub fn exhibit_from_proof(proof_b64: &str) -> Result<String, JsError> {
+    js(api::exhibit_from_proof(proof_b64))
+}
+
+#[wasm_bindgen(js_name = verifyExhibitOnBoard)]
+pub fn verify_exhibit_on_board(
+    exhibit_b64: &str,
+    board_json: Option<String>,
+    invoice_b64: Option<String>,
+) -> Result<String, JsError> {
+    js(api::verify_exhibit_on_board(
+        exhibit_b64,
+        board_json,
+        invoice_b64,
+    ))
+}
+
 #[wasm_bindgen(js_name = rateIndex)]
 pub fn rate_index(board_json: &str, k: u32) -> Result<String, JsError> {
     js(api::rate_index(board_json, k))

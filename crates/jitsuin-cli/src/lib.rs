@@ -83,7 +83,7 @@ fn fund_main(args: &[String], devtool_env: Option<&str>) -> (i32, String, String
 
 fn verify(v: &VerifyArgs) -> Result<(bool, String), String> {
     let board = board::load(&v.source)?;
-    let report = verify::run(board, &v.proofs, &v.bundles)?;
+    let report = verify::run(board, &v.proofs, &v.exhibits, &v.bundles)?;
     let out = if v.json {
         let mut s =
             serde_json::to_string_pretty(&verify::render_json(&report)).expect("report serializes");
