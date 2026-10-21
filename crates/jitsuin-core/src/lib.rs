@@ -9,6 +9,7 @@ pub mod assignment;
 pub mod bundle;
 pub mod entry;
 pub mod error;
+pub mod exhibit;
 pub mod fund;
 pub mod history;
 pub mod index;
@@ -29,6 +30,7 @@ pub use entry::{
     ENTRY_LEN, MEMO_LEN,
 };
 pub use error::Error;
+pub use exhibit::Exhibit;
 pub use fund::{LiabilityRoot, ReceivableNote};
 pub use history::{BuyerIdentity, HistoryCert};
 pub use index::RateIndex;

@@ -14,8 +14,8 @@ use std::time::Instant;
 
 use jitsuin_core::entry::ENTRY_MAGIC;
 use jitsuin_core::{
-    nullifier, settled_tag, BoardEntry, Bundle, DoubleSignProof, EntryAt, EntryKind, Invoice,
-    RateIndex, SettledEntry, SettlementDoc,
+    nullifier, settled_tag, BoardEntry, Bundle, DoubleSignProof, EntryAt, EntryKind, Exhibit,
+    Invoice, RateIndex, SettledEntry, SettlementDoc,
 };
 #[cfg(feature = "net")]
 use jitsuin_wallet::Devtool;
@@ -350,6 +350,27 @@ impl ProofOnBoard {
 /// Checks the positions a proof claims: each entry with a position is on the board exactly
 /// there, and the first entry comes before the second when both are on chain.
 pub fn proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -> ProofOnBoard {
+    entries_on_board(
+        (&proof.first, &proof.first_at),
+        (&proof.second, &proof.second_at),
+        records,
+    )
+}
+
+/// The same check for an Exhibit A (`JTSX`, HNK-30.T5): its two entries and their positions.
+pub fn exhibit_on_board(exhibit: &Exhibit, records: &[BoardRecord]) -> ProofOnBoard {
+    entries_on_board(
+        (&exhibit.first, &exhibit.first_at),
+        (&exhibit.second, &exhibit.second_at),
+        records,
+    )
+}
+
+fn entries_on_board(
+    first: (&BoardEntry, &Option<EntryAt>),
+    second: (&BoardEntry, &Option<EntryAt>),
+    records: &[BoardRecord],
+) -> ProofOnBoard {
     let found = |e: &BoardEntry, at: &EntryAt| {
         records.iter().any(|r| {
             &r.entry == e
@@ -362,15 +383,15 @@ pub fn proof_on_board(proof: &DoubleSignProof, records: &[BoardRecord]) -> Proof
                     }
         })
     };
-    let ordered = match (&proof.first_at, &proof.second_at) {
+    let ordered = match (first.1, second.1) {
         (Some(a), Some(b)) => {
             Some((a.height, a.tx_index, a.output_index) < (b.height, b.tx_index, b.output_index))
         }
         _ => None,
     };
     ProofOnBoard {
-        first: proof.first_at.as_ref().map(|at| found(&proof.first, at)),
-        second: proof.second_at.as_ref().map(|at| found(&proof.second, at)),
+        first: first.1.as_ref().map(|at| found(first.0, at)),
+        second: second.1.as_ref().map(|at| found(second.0, at)),
         ordered,
     }
 }

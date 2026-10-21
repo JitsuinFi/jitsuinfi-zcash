@@ -148,6 +148,8 @@ Members holding the UFVK of a fund's operational account compute solvency themse
 
 Bundle `JTSB`: typed items (invoice, buyer signature, assignment letter, assignment seals, settlement document). Proof `JTSP`: invoice, buyer signature, two register entries with optional board positions. A proof is valid when the buyer signed the invoice and both entries are register entries for its `N`, signed by its `supplier_ephemeral_pk`, with different commitments. Both verify offline.
 
+**Exhibit A `JTSX`** (shareable): `"JTSX"` (4) ‖ version `1` ‖ `N` (32) ‖ `supplier_ephemeral_pk` (32) ‖ the two entries and positions encoded as in `JTSP`. It carries no invoice, amount, buyer key or terms; the commitments are salted. An exhibit is valid when both entries are register entries for `N` signed by the given key with different commitments; against the board, each claimed position must hold the entry and the first must precede the second. On its own it does not show that the key belongs to the invoice behind `N`: a holder of the invoice checks `nullifier(invoice) = N` and `invoice.supplier_ephemeral_pk = key`; an auditor or court receives the full `JTSP`.
+
 ## Security considerations
 
 - **Double financing** is detected by any holder of the invoice and proven by two supplier-signed entries; the proof needs no transaction when the second entry was only offered.

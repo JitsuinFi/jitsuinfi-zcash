@@ -150,7 +150,7 @@ impl DoubleSignProof {
     }
 }
 
-fn txid_bytes(txid: &str) -> Result<[u8; 32], Error> {
+pub(crate) fn txid_bytes(txid: &str) -> Result<[u8; 32], Error> {
     let b = txid.as_bytes();
     if b.len() != 64 {
         return Err(Error::BadBundle);
