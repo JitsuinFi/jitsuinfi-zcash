@@ -63,15 +63,29 @@ fn fund_main(args: &[String], devtool_env: Option<&str>) -> (i32, String, String
     match fund::run(&a) {
         Err(e) => (EXIT_ERROR, String::new(), format!("error: {e}\n")),
         Ok((view, verdict)) => {
+            let inc = match a.path.as_ref().map(|p| {
+                std::fs::read_to_string(p)
+                    .map_err(|e| format!("cannot read {}: {e}", p.display()))
+                    .and_then(|j| fund::inclusion(&j, &view))
+            }) {
+                Some(Err(e)) => return (EXIT_ERROR, String::new(), format!("error: {e}\n")),
+                Some(Ok(i)) => Some(i),
+                None => None,
+            };
             let out = if a.json {
-                let mut s = serde_json::to_string_pretty(&fund::render_json(&a, &view, &verdict))
-                    .expect("report serializes");
+                let mut s = serde_json::to_string_pretty(&fund::render_json(
+                    &a,
+                    &view,
+                    &verdict,
+                    inc.as_ref(),
+                ))
+                .expect("report serializes");
                 s.push('\n');
                 s
             } else {
-                fund::render_text(&a, &view, &verdict)
+                fund::render_text(&a, &view, &verdict, inc.as_ref())
             };
-            let code = if fund::passed(&verdict) {
+            let code = if fund::passed(&verdict, inc.as_ref()) {
                 EXIT_OK
             } else {
                 EXIT_FAILED
