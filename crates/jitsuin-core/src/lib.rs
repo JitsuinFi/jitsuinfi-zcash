@@ -22,6 +22,7 @@ pub mod proof;
 pub mod receipt;
 pub mod seal;
 pub mod settled;
+pub mod units;
 
 pub use assignment::Assignment;
 pub use bundle::{Bundle, BundleReport};
