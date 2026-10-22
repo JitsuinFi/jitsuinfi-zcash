@@ -70,6 +70,14 @@ On 2026-10-20 it ends with (a later scan may count entries posted since):
 
 The testnet board then held 6 invoices, so every tenor class shows `fewer than 5 invoices`: a class is published only from k = 5 invoices, which keeps single deals from being read off the index.
 
+On 2026-10-22 five more test invoices were registered with their real classes (`TES-INV-IDX-…`, 45-day tenor, discounts 2 % to 6 %, registration only; [`crates/jitsuin-flow/examples/testnet_index.rs`](crates/jitsuin-flow/examples/testnet_index.rs)). The same command then publishes its first class:
+
+```
+  31-60 days     5         3-5%             other: 5
+```
+
+Each discount class alone still holds fewer than 5 invoices, so they are shown together as `other`. Entries and full output: [`examples/testnet/index-tes-inv-idx/`](examples/testnet/index-tes-inv-idx/).
+
 **3. Offline, without the network.** The image holds the snapshot, so no volume is needed:
 
 ```bash
