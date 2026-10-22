@@ -81,6 +81,23 @@ They print exactly [`examples/testnet/expected-output.txt`](examples/testnet/exp
 
 **4. In the browser:** open the Verify page at <https://jitsuinfi.vercel.app/app.html#/verify>, paste the proof text, choose the board snapshot (or your own from step 3) as board data and press Verify. The page runs the same checks compiled to WebAssembly, in the page, and gives the same verdict.
 
+**5. A whole deal, end to end.** On 2026-10-22 one test invoice backed by a real PDF, `TES-INV-E2E1-77210` (100 000 zat, due in 30 days), went through the full cycle on testnet: the buyer signed the invoice bytes, the financier registered N, the supplier, the buyer and the financier sealed the assignment letter, the financier paid the 90 000 zat advance, the buyer repaid the financier directly and the settled entry closed the deal. A second financier was then offered the same invoice and caught it. The files are in [`examples/testnet/e2e-tes-inv-e2e1/`](examples/testnet/e2e-tes-inv-e2e1/):
+
+| Step | Testnet txid |
+|---|---|
+| Register entry (block 4527411) | `62ff4a57068eb71ef50b78a692369d1c6ed1e968c0891e15cc4a8e39fb35a910` |
+| Advance, financier to supplier | `a8130e334146727bd13e548a9cd8972bb8f8efa39600e418cfd6cd7e0634e9a0` |
+| Repayment, buyer to financier | `f14249878530eff63ae72a02748ca8ed12b0026a7ed40432743b706f47946517` |
+| Settled entry (block 4527419, on time) | `0c377146708c758eae644e15e3e7f89c398ed043c6416503579b56c4c8efdbb9` |
+
+The advance and the repayment are shielded payments, so a block explorer shows only that a transaction exists; the two board entries read with the board UFVK. Check the deal and the second offer against the live board:
+
+```bash
+docker run --rm -v jitsuin-board:/work/wallet-board-testnet jitsuin verify --ufvk "$(cat examples/testnet/board-ufvk.txt)" --birthday 4508703 --bundle examples/testnet/e2e-tes-inv-e2e1/bundle.txt --proof examples/testnet/e2e-tes-inv-e2e1/proof.txt
+```
+
+It ends with `=> DOUBLE FINANCING PROVEN`, `=> DEAL VERIFIED` and `Result   PASS (5 check(s), 0 failed)`; the full output is [`verify-output.txt`](examples/testnet/e2e-tes-inv-e2e1/verify-output.txt). The bundle's invoice carries `terms_hash`, the SHA-256 of [`invoice.pdf`](examples/testnet/e2e-tes-inv-e2e1/invoice.pdf), and its assignment letter the hash of [`letter.pdf`](examples/testnet/e2e-tes-inv-e2e1/letter.pdf). The program that ran the cycle is [`crates/jitsuin-flow/examples/testnet_cycle.rs`](crates/jitsuin-flow/examples/testnet_cycle.rs); it needs two funded testnet wallets and the board's watch-only wallet, and its header says how to run it.
+
 Without Docker, see [With cargo](#with-cargo) below and run the same commands with `jitsuin` instead of `docker run … jitsuin`.
 
 ## How it works
