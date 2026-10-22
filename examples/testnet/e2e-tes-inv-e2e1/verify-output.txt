@@ -1,0 +1,37 @@
+Board    testnet live scan, watch-only wallet board-watch (existing)
+         15 mined                  tx, 0 pending, order from https://testnet.zec.rocks:443, 8.3 s
+Entries  10 register (2 with history tag), 3 settled, 5 rejected memo(s)
+
+  height      tx  out  kind      N / tag       commitment    d/t  txid
+  4508981      2    2  register  424242424242  dddddddddddd  2/3  8d8835f72129468ee06486458318355ebe98388594ae8f962ab814f99be887bc
+  4509045      4    2  register  424242424242  eeeeeeeeeeee  2/3  b8a272a87ad9023f3a00a6ffb630e8a584ba0a279af624cda939426c75809970
+  4509045      4    3  register  424242424242  999999999999  2/3  b8a272a87ad9023f3a00a6ffb630e8a584ba0a279af624cda939426c75809970
+  4509085      1    1  register  d415575c392c  b359265f3d42  2/3  fe33137b7b76ce86e5c32d2e4bd6f271806b685837c6a99160857810ce7a98bc
+  4509299      2    0  register  56edc4f5ed4b  b359265f3d42  2/3  33b8f3b0aa754e790e9c7fac0ae7dc08ce8612a8c26620d551d790e1ea390a56
+  4509304      1    1  settled   2e5896443d18  -             -    dcba74c63a701057d0e6e5f2cee4391b509d393c792801449c772c9552b7cad3
+  4509423      2    1  history   084137aadfe4  b2a49b8e19f6  1/1  89af294e09372d137cb9eae95b7b1ba8c7710bb9d14fe2584b4b8951f8cba4bf
+  4509440      1    0  settled   81f9150757c3  -             -    c60c777ec90cde166324df723ff7695149301f24db0f4d421f68c78dd62845fa
+  4509443      2    0  history   d0b63f6a7c99  b2a49b8e19f6  1/1  fe7136876222e31921b7dd14ecf8b7a5efdeaf8a0c12179badc15389dd1db608
+  4509521      3    0  register  56edc4f5ed4b  bf1766fda955  2/3  05d5aa7a02a33c14d460922468745fb4d6d814daa83989eed22b21c0540c79eb
+  4511024      1    0  register  305d2561a4b1  6735c27da62f  1/1  72d0e3ed66c757cdb44e570f25ed77191b3e0f8aa111f4757ef65cc29f999083
+  4527411      1    1  register  904334583451  34248e3299dd  0/0  62ff4a57068eb71ef50b78a692369d1c6ed1e968c0891e15cc4a8e39fb35a910
+  4527419      2    0  settled   5629e43449ea  -             -    0c377146708c758eae644e15e3e7f89c398ed043c6416503579b56c4c8efdbb9
+  rejected  b6e9a61bd50c4b998d31adbf1d13a92a83e29846f6bc01e2731813e3bbea1fc4:3  unknown magic bytes
+  rejected  d759bbf2605a9cc9a220dbc0383645133c01bb722a38fc22a0f13b36355d2ac0:1  unknown magic bytes
+  rejected  d759bbf2605a9cc9a220dbc0383645133c01bb722a38fc22a0f13b36355d2ac0:3  unknown magic bytes
+  rejected  b8a272a87ad9023f3a00a6ffb630e8a584ba0a279af624cda939426c75809970:0  unknown magic bytes
+  rejected  a81cd2045664e83a4141278f4878c401d6181344b90d02526fb2b61205e5e858:0  invalid settled flag 0x00
+
+Proof  examples/testnet/e2e-tes-inv-e2e1/proof.txt
+  PASS  signatures: buyer signed invoice TES-INV-E2E1-77210; supplier signed N 904334583451 for 2 different financiers (34248e3299dd and aae6fd7117b0)
+  PASS  first entry: on the board at 4527411/1/1 (txid 62ff4a57068eb71ef50b78a692369d1c6ed1e968c0891e15cc4a8e39fb35a910)
+  INFO  second entry: offered off-chain to the financier that caught it, never posted
+  => DOUBLE FINANCING PROVEN
+
+Bundle  examples/testnet/e2e-tes-inv-e2e1/bundle.txt
+  PASS  signatures: buyer signed invoice TES-INV-E2E1-77210 (N 904334583451); assignment letter sealed by supplier, buyer, financier
+  PASS  registration: registered once: first valid entry at 4527411/1/1 (txid 62ff4a57068eb71ef50b78a692369d1c6ed1e968c0891e15cc4a8e39fb35a910)
+  PASS  settlement: settled entry signed by buyer and financier at 4527419/2/0 (txid 0c377146708c758eae644e15e3e7f89c398ed043c6416503579b56c4c8efdbb9), on time
+  => DEAL VERIFIED
+
+Result   PASS (5 check(s), 0 failed)

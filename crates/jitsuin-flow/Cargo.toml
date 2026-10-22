@@ -15,3 +15,6 @@ qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 rqrr = { version = "0.11.0", default-features = false }
+# examples/testnet_cycle.rs only (HNK-17.T1): fresh keys per run, base64url output files
+sha2.workspace = true
+base64 = "0.22"
