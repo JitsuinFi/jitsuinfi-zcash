@@ -5,8 +5,10 @@
 //! only passes paths and reads command output.
 
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -99,7 +101,14 @@ pub struct Devtool {
     bin: PathBuf,
     wallet_dir: PathBuf,
     identity: Option<PathBuf>,
+    read_timeout: Duration,
 }
+
+/// How long a read-only command (`sync`, `enhance`, …) may take before it is stopped. A
+/// lightwalletd connection that never answers would otherwise hold the caller, and the node's
+/// chain lock with it, forever (HNK-32.T8). Sync progress is saved per batch, so a stopped sync
+/// carries on where it was the next time.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl Devtool {
     pub fn new(bin: impl Into<PathBuf>, wallet_dir: impl Into<PathBuf>) -> Self {
@@ -107,7 +116,14 @@ impl Devtool {
             bin: bin.into(),
             wallet_dir: wallet_dir.into(),
             identity: None,
+            read_timeout: READ_TIMEOUT,
         }
+    }
+
+    /// Limit for read-only commands other than [`READ_TIMEOUT`].
+    pub fn with_read_timeout(mut self, limit: Duration) -> Self {
+        self.read_timeout = limit;
+        self
     }
 
     /// age identity file that decrypts the wallet mnemonic; required for spending.
@@ -121,15 +137,68 @@ impl Devtool {
     }
 
     fn run(&self, args: &[&str]) -> Result<String, Error> {
-        let out = Command::new(&self.bin)
+        self.run_for(args, None)
+    }
+
+    /// Runs one devtool command; with a `limit`, stops it once the limit passes. Never used with a
+    /// limit for `pay`: a payment stopped half-way may still reach the chain.
+    fn run_for(&self, args: &[&str], limit: Option<Duration>) -> Result<String, Error> {
+        let mut child = Command::new(&self.bin)
             .arg("wallet")
             .arg("-w")
             .arg(&self.wallet_dir)
             .args(args)
-            .output()?;
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let drain = |pipe: Option<Box<dyn Read + Send>>| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut p) = pipe {
+                    let _ = p.read_to_end(&mut buf);
+                }
+                buf
+            })
+        };
+        let out_h = drain(
+            child
+                .stdout
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        );
+        let err_h = drain(
+            child
+                .stderr
+                .take()
+                .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        );
+        let status = match limit {
+            None => child.wait()?,
+            Some(limit) => {
+                let end = Instant::now() + limit;
+                loop {
+                    if let Some(status) = child.try_wait()? {
+                        break status;
+                    }
+                    if Instant::now() >= end {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(Error::Devtool(format!(
+                            "Error: `{}` gave up after {} s without an answer",
+                            args.first().copied().unwrap_or("wallet"),
+                            limit.as_secs()
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        };
+        let out_b = out_h.join().unwrap_or_default();
+        let err_b = err_h.join().unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&out_b).into_owned();
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&err_b);
             let last = stderr
                 .lines()
                 .chain(stdout.lines())
@@ -173,7 +242,7 @@ impl Devtool {
     fn run_retrying(&self, args: &[&str]) -> Result<String, Error> {
         let mut attempt = 0;
         loop {
-            match self.run(args) {
+            match self.run_for(args, Some(self.read_timeout)) {
                 Err(Error::Devtool(m)) if is_transient(&m) && attempt < RETRIES => {
                     attempt += 1;
                     std::thread::sleep(std::time::Duration::from_secs(2 * attempt as u64));
@@ -489,6 +558,28 @@ d759bbf2605a9cc9a220dbc0383645133c01bb722a38fc22a0f13b36355d2ac0
               uneconomic_value: Zatoshis(0,), }, }, }, chain_tip_height: BlockHeight(4511015,) }";
         assert_eq!(parse_balance(out).unwrap(), 99_602_008);
         assert!(parse_balance("Error: nope").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_that_never_answers_is_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("jitsuin-devtool-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("devtool");
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let d = Devtool::new(&bin, &dir).with_read_timeout(Duration::from_millis(300));
+        let started = Instant::now();
+        let e = d.enhance().unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "not stopped in time"
+        );
+        assert!(e.to_string().contains("gave up after"), "{e}");
+        // the stop is not a transient error: the caller fails this round instead of waiting again
+        assert!(!is_transient(&e.to_string()));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
