@@ -462,3 +462,30 @@ fn published_testnet_board_and_proof_still_verify() {
         Ok(jitsuin_cli::args::Network::Test)
     );
 }
+
+/// HNK-04.T3 / T4: `jitsuin board scan` lists the same table as `verify`, without checks: on the
+/// sample board, four register entries, one settled entry and one rejected memo (an unknown
+/// entry kind), with exit 0 because nothing was checked.
+#[test]
+fn board_scan_lists_valid_entries_and_the_invalid_one() {
+    let (code, out, _) = jitsuin(&["board", "scan", "--board", BOARD]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("Entries  4 register (0 with history tag), 1 settled, 1 rejected memo(s)"),
+        "{out}"
+    );
+    assert!(out.contains("unknown registry entry kind 0x09"), "{out}");
+    let expected = std::fs::read_to_string(root().join(EXPECTED)).unwrap();
+    let table = |t: &str| {
+        t.lines()
+            .filter(|l| {
+                !l.contains("PASS")
+                    && (l.contains(" register ")
+                        || l.contains(" settled ")
+                        || l.contains("rejected  "))
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(table(&out), table(&expected));
+}
