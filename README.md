@@ -87,7 +87,7 @@ docker run --rm jitsuin index --board examples/testnet/board-snapshot.json
 
 They print exactly [`examples/testnet/expected-output.txt`](examples/testnet/expected-output.txt) and [`examples/testnet/expected-index.txt`](examples/testnet/expected-index.txt); `cargo test` in CI checks both files byte for byte. Add `--save-board mine.json` to the live scan in step 1 to write your own snapshot; it holds the same entries, plus any posted after the capture.
 
-**4. In the browser:** open the Verify page at <https://jitsuinfi.vercel.app/app.html#/verify>, paste the proof text, choose the board snapshot (or your own from step 3) as board data and press Verify. The page runs the same checks compiled to WebAssembly, in the page, and gives the same verdict.
+**4. In the browser:** open the Verify page at <https://jitsuinfi.vercel.app/verify>, paste the proof text, choose the board snapshot (or your own from step 3) as board data and press Verify. The page runs the same checks compiled to WebAssembly, in the page, and gives the same verdict.
 
 **5. A whole deal, end to end.** On 2026-10-22 one test invoice backed by a real PDF, `TES-INV-E2E1-77210` (100 000 zat, due in 30 days), went through the full cycle on testnet: the buyer signed the invoice bytes, the financier registered N, the supplier, the buyer and the financier sealed the assignment letter, the financier paid the 90 000 zat advance, the buyer repaid the financier directly and the settled entry closed the deal. A second financier was then offered the same invoice and caught it. The files are in [`examples/testnet/e2e-tes-inv-e2e1/`](examples/testnet/e2e-tes-inv-e2e1/):
 
