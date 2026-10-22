@@ -3,6 +3,7 @@ name = "jitsuin-wasm"
 version = "0.1.0"
 description = "JitsuinFi in the browser: buyer keys from a passkey, invoice and letter signing, repayment QR, client-side verification"
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 

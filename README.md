@@ -218,3 +218,7 @@ Expected output: [`examples/index/expected-output.txt`](examples/index/expected-
 `jitsuin_core::index::classes_for(face, advance, advance_day, due_day)` gives the two codes of a deal. Entries are `0/0` (not disclosed) by default: anyone holding the invoice (the buyer, a financier that was shown it) can compute `N` and read that entry's classes, so the supplier opts in before its classes join the index. A financier accepts either the deal's classes or `0/0`. Both are disclosed or neither; other values are counted as invalid and left out.
 
 Status: in development for ZECATHON 2026. Everything runs on Zcash testnet, in the Ironwood shielded pool (on mainnet, Ironwood is live since the NU6.3 upgrade of 28 July 2026).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option. Unless you explicitly state otherwise, any contribution you submit for inclusion in this work, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.

@@ -3,6 +3,7 @@ name = "jitsuin-board"
 version = "0.1.0"
 description = "JitsuinFi registry board scanner: ordering, duplicate nullifier detection, invalid entry filtering"
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 

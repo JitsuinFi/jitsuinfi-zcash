@@ -3,6 +3,7 @@ name = "jitsuin-flow"
 version = "0.1.0"
 description = "JitsuinFi role flows: financier check, register, confirm, advance; supplier receipt verification"
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 
