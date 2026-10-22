@@ -10,10 +10,13 @@ jitsuin: JitsuinFi registry board verifier (no spending key, no ZEC needed)
 
 USAGE:
     jitsuin verify (--ufvk <UFVK> | --board <FILE>) [CHECKS] [OPTIONS]
+    jitsuin board scan (--ufvk <UFVK> | --board <FILE>) [OPTIONS]
     jitsuin index  (--ufvk <UFVK> | --board <FILE>) [--k <K>] [OPTIONS]
     jitsuin fund   --ufvk <UFVK> --manager-pk <HEX> [OPTIONS]   (see `jitsuin fund --help`)
 
     verify   List the board's entries and check proofs and bundles against it.
+    board scan
+             List the board's entries as a table (register, settled, rejected), nothing else.
     index    Public rate index: discount by tenor class, from the board (HNK-08).
     fund     A fund member's solvency check with its own watch-only wallet (HNK-15).
 
@@ -130,6 +133,11 @@ pub fn parse(args: &[String], devtool_env: Option<&str>) -> Result<Command, Stri
         None | Some("help" | "-h" | "--help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
         Some(c @ ("verify" | "index")) => c,
+        // HNK-04.T3: `jitsuin board scan` lists the board's entries; checks belong to `verify`
+        Some("board") => match it.next().map(String::as_str) {
+            Some("scan") => "scan",
+            _ => return Err("`jitsuin board` takes `scan` (try `jitsuin --help`)".into()),
+        },
         Some(other) => return Err(format!("unknown command `{other}` (try `jitsuin --help`)")),
     };
 
@@ -287,6 +295,15 @@ mod tests {
         assert_eq!(p(&["verify", "--board", "b.json", "-h"]), Ok(Command::Help));
         assert_eq!(p(&["--version"]), Ok(Command::Version));
         assert!(p(&["scan"]).unwrap_err().contains("unknown command"));
+        // HNK-04.T3
+        match p(&["board", "scan", "--board", "b.json"]) {
+            Ok(Command::Verify(v)) => assert!(v.proofs.is_empty() && v.bundles.is_empty()),
+            other => panic!("board scan parsed as {other:?}"),
+        }
+        assert!(p(&["board"]).unwrap_err().contains("takes `scan`"));
+        assert!(p(&["board", "scan", "--board", "b", "--proof", "x"])
+            .unwrap_err()
+            .contains("only applies to `jitsuin verify`"));
     }
 
     #[test]

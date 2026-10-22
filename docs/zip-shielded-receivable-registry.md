@@ -185,4 +185,4 @@ Every vector is asserted by the reference implementation's unit tests (`cargo te
 
 ## Reference implementation
 
-`jitsuinfi-zcash`: `jitsuin-core` (formats), `jitsuin-board` (scanner, lookup, history checks), `jitsuin-flow` (financier state machine, settlement watchdog, fund solvency), `jitsuin-wasm` (browser package). All flows were exercised end to end on Zcash testnet (NU7, Ironwood pool) with test data prefixed `TES-`.
+`jitsuinfi-zcash`: `jitsuin-core` (formats), `jitsuin-board` (scanner, lookup, history checks), `jitsuin-flow` (financier state machine, settlement watchdog, fund solvency), `jitsuin-wasm` (browser package). All flows were exercised end to end on Zcash testnet, Ironwood pool with test data prefixed `TES-`.
