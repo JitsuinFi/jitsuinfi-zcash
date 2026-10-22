@@ -3,6 +3,7 @@ name = "jitsuin-core"
 version = "0.1.0"
 description = "JitsuinFi core: canonical invoices, buyer signatures, shielded registry entries and signed receipts"
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 publish = false
 
