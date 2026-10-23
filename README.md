@@ -28,6 +28,7 @@ The registry board is a receive-only shielded account on Zcash testnet. Its unif
 | Double-financing proof | [`examples/testnet/proof-tes-inv-0003.txt`](examples/testnet/proof-tes-inv-0003.txt) |
 | Exhibit A (the same double signature without the invoice) | [`examples/testnet/exhibit-tes-inv-0003.txt`](examples/testnet/exhibit-tes-inv-0003.txt) |
 | Board snapshot | [`examples/testnet/board-snapshot.json`](examples/testnet/board-snapshot.json), entries up to block 4511024, captured 2026-10-20 |
+| Financier console, demo | <https://jitsuinfi-console-demo.vercel.app/console>: a sandbox testnet node; create a passkey, no invite, and see the sealed mailbox and the deal pipeline. Nothing there moves money. |
 
 **1. Scan the live board and check the proof.** From the repository root:
 
