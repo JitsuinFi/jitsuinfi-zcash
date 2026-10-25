@@ -142,7 +142,7 @@ A verifier given certificates `0..k` MUST check: a gap-free chain from index 0 u
 
 ### 9. Pooled fund (optional)
 
-Members holding the UFVK of a fund's operational account compute solvency themselves: cash (account balance) plus, for every advance carrying a manager-signed receipt and a receivable note (`JTN1`: `N`, face amount, due date), the face amount minus repayments received for `N`, overdue amounts after a haircut, compared with the total of the latest manager-signed liability root (`JTLR`: period, Merkle sum root of member deposits, total, manager key, signature).
+Members holding the UFVK of a fund's operational account compute solvency themselves. Because the account may also hold the manager's own money, the fund is valued on its books: the deposit and payout transactions the manager lists with each member's path (values read from the chain), replayed in chain order, where an advance carrying a manager-signed receipt and a receivable note (`JTN1`: `N`, face amount, due date) is the fund's when the books' cash covered it in full at that point. Assets are the books' cash plus, for the fund's advances, the face amount minus repayments received for `N`; an overdue amount is written off in full (it counts 0 until its repayment is on chain, then counts as cash). They are compared with the total of the latest manager-signed liability root (`JTLR`: period, Merkle sum root of member deposits, total, manager key, signature), and the account balance must be at least the books' cash. This shows that the account holds the fund's cash at the time of the check, not that the cash is set apart from the manager's own; each member checks that their own deposit is listed.
 
 ### 10. Verification bundle and double-signature proof
 

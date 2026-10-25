@@ -10,13 +10,21 @@
 //! latest manager-signed root on chain: the period's path the fund sent them (`fund.merkle_path`,
 //! saved from the member page) must end in that root and add up to its total (HNK-29.T2, D-49).
 //! Since D-49 the root's total counts units at par (1 zat each), so SOLVENT means "not below par".
+//!
+//! Since 2026-10-25 (user decision) the fund is valued on its books, not on the whole wallet it
+//! shares with the manager: the path file carries the fund's deposit and payout txids (`books`),
+//! `jitsuin_flow::fund::fund_books` reads their values from the chain and replays the advances
+//! the fund paid and their repayments. SOLVENT then means the books' assets are not below par
+//! AND the wallet holds at least the books' cash. A path from a close made before the books
+//! (no `books` field) still checks inclusion, but gives no solvency verdict.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jitsuin_core::units;
 use jitsuin_flow::fund::{
-    member_view, solvency, FundView, ReceivableStatus, Solvency, SolvencyPolicy,
+    book_solvency, member_books, BookSolvency, Books, FundBooks, FundView, ReceivableStatus,
+    SolvencyPolicy,
 };
 use jitsuin_wallet::Devtool;
 use serde_json::{json, Value};
@@ -38,10 +46,13 @@ USAGE:
     --manager-pk <HEX>      Manager's public key (64 hex); only its receipts and roots count.
     --birthday <HEIGHT>     First block of the account. Required when the wallet is created.
     --grace-days <DAYS>     Days after the due date before a receivable is overdue [default 7]
-    --haircut <PERCENT>     Share of an overdue receivable written off [default 100]
+    --haircut <PERCENT>     Share of an overdue receivable written off [default 100, as the
+                            fund's node values it; the member page refuses another value]
     --today <DAYS>          Date as days since 1970-01-01 [default: today]
     --path <FILE>           The fund.merkle_path you saved from the member page: checks that
-                            your units are under the latest root on chain.
+                            your units are under the latest root on chain, and carries the
+                            fund's books (its deposit and payout txids). Without it, or with a
+                            path from before the books, there is no solvency verdict.
     --wallet-dir <DIR>      Watch-only wallet [default: wallet-fund-<network>]
     --devtool <PATH>        zcash-devtool binary [default: $JITSUIN_DEVTOOL or zcash-devtool]
     --json                  Machine-readable report.
@@ -170,8 +181,42 @@ fn set<T>(slot: &mut Option<T>, name: &str, value: T) -> Result<(), String> {
     Ok(())
 }
 
-/// Syncs the local watch-only wallet (created on first run) and computes the verdict.
-pub fn run(a: &FundArgs) -> Result<(FundView, Option<Solvency>), String> {
+/// The fund's books from a saved `fund.merkle_path` (the node adds them since 2026-10-25), or
+/// `None` for a path without them. Txids only; their values come from the chain.
+pub fn path_books(path_json: &str) -> Option<FundBooks> {
+    let b: Value = serde_json::from_str(path_json).ok()?;
+    let b = if b["type"] == "fund.merkle_path" {
+        &b["body"]["books"]
+    } else {
+        &b["books"]
+    };
+    let ids = |k: &str| -> Option<Vec<String>> {
+        b[k].as_array()?
+            .iter()
+            .map(|t| {
+                t.as_str()
+                    .filter(|t| t.len() == 64 && t.bytes().all(|c| c.is_ascii_hexdigit()))
+                    .map(str::to_string)
+            })
+            .collect()
+    };
+    Some(FundBooks {
+        deposits: ids("deposits")?,
+        payouts: ids("payouts")?,
+    })
+}
+
+/// Why there is no verdict when the books are missing.
+pub const NO_BOOKS: &str = "no fund books: the fund's assets are its books (deposits and their \
+flows), which come with your path; run with --path and a path saved from a close made after \
+the books (2026-10-25)";
+
+/// Syncs the local watch-only wallet (created on first run), values the fund on `books` and
+/// computes the verdict; no verdict without books.
+pub fn run(
+    a: &FundArgs,
+    books: Option<&FundBooks>,
+) -> Result<(Books, Option<BookSolvency>), String> {
     let watch = Devtool::new(&a.devtool, &a.wallet_dir);
     if !wallet_exists(&a.wallet_dir) {
         let birthday = a.birthday.ok_or_else(|| {
@@ -184,15 +229,23 @@ pub fn run(a: &FundArgs) -> Result<(FundView, Option<Solvency>), String> {
             .init_fvk(WATCH_ACCOUNT, &a.ufvk, birthday)
             .map_err(|e| format!("zcash-devtool: {e}"))?;
     }
-    let view =
-        member_view(&watch, &a.manager_pk, a.today, a.grace_days).map_err(|e| e.to_string())?;
-    let verdict = solvency(
-        &view,
-        &SolvencyPolicy {
-            overdue_haircut_pct: a.haircut_pct,
-        },
-    );
-    Ok((view, verdict))
+    let b = member_books(
+        &watch,
+        &a.manager_pk,
+        a.today,
+        a.grace_days,
+        books.unwrap_or(&FundBooks::default()),
+    )
+    .map_err(|e| e.to_string())?;
+    let verdict = books.and_then(|_| {
+        book_solvency(
+            &b,
+            &SolvencyPolicy {
+                overdue_haircut_pct: a.haircut_pct,
+            },
+        )
+    });
+    Ok((b, verdict))
 }
 
 /// The member's units against the latest root on chain.
@@ -271,7 +324,7 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
 }
 
 /// 0 solvent (and included, when a path was checked), 1 otherwise.
-pub fn passed(verdict: &Option<Solvency>, inc: Option<&Inclusion>) -> bool {
+pub fn passed(verdict: &Option<BookSolvency>, inc: Option<&Inclusion>) -> bool {
     verdict.is_some_and(|s| s.solvent) && inc.is_none_or(|i| i.included)
 }
 
@@ -288,16 +341,21 @@ fn status(s: ReceivableStatus) -> &'static str {
 }
 
 const LIMITS: &str =
-    "Receivables are the manager's own notes (face value and due date); a breach shows \
-only once a receivable is overdue. Liabilities count units at par (1 zat each). Inclusion of \
-your units needs your Merkle path (--path).";
+    "Assets are the fund's books: the deposits the manager lists (check that yours is there) \
+and their flows read from the chain, not the whole wallet, which the fund shares with the \
+manager. The wallet check shows it holds at least the books' cash now, not that this cash is set \
+apart: the manager can spend from the same wallet later. Receivables are the manager's own notes \
+(face value and due date); a breach shows only once a receivable is overdue. Network fees are \
+not on the books. Liabilities count units at par (1 zat each). Inclusion of your units needs \
+your Merkle path (--path).";
 
 pub fn render_text(
     a: &FundArgs,
-    view: &FundView,
-    verdict: &Option<Solvency>,
+    b: &Books,
+    verdict: &Option<BookSolvency>,
     inc: Option<&Inclusion>,
 ) -> String {
+    let view = &b.view;
     let mut out = format!(
         "Fund     {} watch-only wallet {}, day {}, grace {} days, haircut {}%\n",
         a.network.name(),
@@ -306,7 +364,28 @@ pub fn render_text(
         a.grace_days,
         a.haircut_pct
     );
-    out += &format!("Cash     {} zat\n", view.cash_zat);
+    let deposited: u64 = b.deposits.iter().map(|l| l.amount_zat).sum();
+    let paid: u64 = b.payouts.iter().map(|l| l.amount_zat).sum();
+    out += &format!(
+        "Books    deposits {} zat ({}), advanced {}, repaid {}, paid out {} zat ({})\n",
+        deposited,
+        b.deposits.len(),
+        b.advanced_zat,
+        b.repaid_zat,
+        paid,
+        b.payouts.len()
+    );
+    if !b.missing.is_empty() {
+        out += &format!(
+            "Missing  {} listed transactions are not mined in the wallet: {}\n",
+            b.missing.len(),
+            b.missing.join(", ")
+        );
+    }
+    out += &format!(
+        "Cash     {} zat on the books; the wallet holds {} zat\n",
+        view.cash_zat, b.wallet_zat
+    );
     for r in &view.receivables {
         out += &format!(
             "Note     N {}… face {} repaid {} due {} {}\n",
@@ -323,18 +402,30 @@ pub fn render_text(
             view.ignored_roots
         );
     }
-    out += &match verdict {
-        None => "Verdict  NO ROOT: the manager has not posted a liability root yet\n".to_string(),
-        Some(s) => format!(
-            "Root     period {}, liabilities {} zat\nAssets   {} zat (cash {} + open {} + overdue after haircut {})\nVerdict  {}\n",
-            s.period,
-            s.liabilities_zat,
-            s.assets_zat,
-            s.cash_zat,
-            s.open_zat,
-            s.overdue_zat,
-            if s.solvent { "SOLVENT" } else { "NOT SOLVENT" }
-        ),
+    out += &match (verdict, &view.root) {
+        (None, None) => {
+            "Verdict  NO ROOT: the manager has not posted a liability root yet\n".to_string()
+        }
+        (None, Some(_)) => format!("Verdict  NONE: {NO_BOOKS}\n"),
+        (Some(v), _) => {
+            let s = &v.solvency;
+            format!(
+                "Root     period {}, liabilities {} zat\nAssets   {} zat (cash {} + open {} + overdue after haircut {})\nWallet   {} zat: {}\nVerdict  {}\n",
+                s.period,
+                s.liabilities_zat,
+                s.assets_zat,
+                s.cash_zat,
+                s.open_zat,
+                s.overdue_zat,
+                v.wallet_zat,
+                if v.wallet_covers {
+                    "holds at least the books' cash"
+                } else {
+                    "LESS than the books' cash"
+                },
+                if v.solvent { "SOLVENT" } else { "NOT SOLVENT" }
+            )
+        }
     };
     if let Some(i) = inc {
         out += &format!(
@@ -353,16 +444,32 @@ pub fn render_text(
 
 pub fn render_json(
     a: &FundArgs,
-    view: &FundView,
-    verdict: &Option<Solvency>,
+    b: &Books,
+    verdict: &Option<BookSolvency>,
     inc: Option<&Inclusion>,
 ) -> Value {
+    let view = &b.view;
+    let lines = |ls: &[jitsuin_flow::fund::BookLine]| -> Vec<Value> {
+        ls.iter()
+            .map(|l| json!({ "txid": l.txid, "amount_zat": l.amount_zat }))
+            .collect()
+    };
     json!({
         "network": a.network.name(),
         "today": a.today,
         "grace_days": a.grace_days,
         "haircut_pct": a.haircut_pct,
+        // since 2026-10-25: the fund's cash on its books, not the wallet's balance
+        "basis": "books",
         "cash_zat": view.cash_zat,
+        "wallet_zat": b.wallet_zat,
+        "books": {
+            "deposits": lines(&b.deposits),
+            "payouts": lines(&b.payouts),
+            "missing": b.missing,
+            "advanced_zat": b.advanced_zat,
+            "repaid_zat": b.repaid_zat,
+        },
         "receivables": view.receivables.iter().map(|r| json!({
             "nullifier": hex(&r.nullifier),
             "face_zat": r.face_zat,
@@ -373,14 +480,22 @@ pub fn render_json(
             "advance_txid": r.advance_txid,
         })).collect::<Vec<_>>(),
         "ignored_roots": view.ignored_roots,
-        "verdict": verdict.map(|s| json!({
-            "period": s.period,
-            "liabilities_zat": s.liabilities_zat,
-            "assets_zat": s.assets_zat,
-            "open_zat": s.open_zat,
-            "overdue_zat": s.overdue_zat,
-            "solvent": s.solvent,
+        "verdict": verdict.map(|v| json!({
+            "period": v.solvency.period,
+            "liabilities_zat": v.solvency.liabilities_zat,
+            "assets_zat": v.solvency.assets_zat,
+            "cash_zat": v.solvency.cash_zat,
+            "open_zat": v.solvency.open_zat,
+            "overdue_zat": v.solvency.overdue_zat,
+            "wallet_zat": v.wallet_zat,
+            "wallet_covers": v.wallet_covers,
+            "solvent": v.solvent,
         })),
+        "no_verdict": match (verdict, &view.root) {
+            (Some(_), _) => Value::Null,
+            (None, None) => "no liability root on chain yet".into(),
+            (None, Some(_)) => NO_BOOKS.into(),
+        },
         "inclusion": inc.map(|i| json!({
             "period": i.period,
             "units": i.units,
@@ -394,7 +509,29 @@ pub fn render_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jitsuin_flow::fund::Receivable;
+    use jitsuin_flow::fund::{Receivable, Solvency};
+
+    fn books(view: FundView, wallet_zat: u64) -> Books {
+        Books {
+            view,
+            wallet_zat,
+            deposits: vec![],
+            payouts: vec![],
+            missing: vec![],
+            advanced_zat: 0,
+            repaid_zat: 0,
+        }
+    }
+
+    fn verdict(s: Solvency, wallet_zat: u64) -> Option<BookSolvency> {
+        let wallet_covers = wallet_zat >= s.cash_zat;
+        Some(BookSolvency {
+            solvency: s,
+            wallet_zat,
+            wallet_covers,
+            solvent: s.solvent && wallet_covers,
+        })
+    }
 
     fn p(args: &[&str]) -> Result<Option<FundArgs>, String> {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -460,15 +597,16 @@ mod tests {
             root: None,
             ignored_roots: 0,
         };
-        let none = solvency(
-            &view,
+        let b = books(view, 300_000_000);
+        let none = book_solvency(
+            &b,
             &SolvencyPolicy {
                 overdue_haircut_pct: 100,
             },
         );
         assert!(!passed(&none, None));
-        assert!(render_text(&a, &view, &none, None).contains("NO ROOT"));
-        let s = Some(Solvency {
+        assert!(render_text(&a, &b, &none, None).contains("NO ROOT"));
+        let s = Solvency {
             cash_zat: 100_000,
             open_zat: 40_000,
             overdue_zat: 0,
@@ -476,13 +614,23 @@ mod tests {
             liabilities_zat: 120_000,
             period: 3,
             solvent: true,
-        });
-        assert!(passed(&s, None));
-        let text = render_text(&a, &view, &s, None);
+        };
+        let v = verdict(s, 300_000_000);
+        assert!(passed(&v, None));
+        let text = render_text(&a, &b, &v, None);
         assert!(text.contains("SOLVENT") && text.contains("Limits"));
-        let j = render_json(&a, &view, &s, None);
+        let j = render_json(&a, &b, &v, None);
         assert_eq!(j["verdict"]["solvent"], true);
+        assert_eq!(j["basis"], "books");
+        assert_eq!(
+            (j["cash_zat"].as_u64(), j["wallet_zat"].as_u64()),
+            (Some(100_000), Some(300_000_000))
+        );
         assert_eq!(j["receivables"][0]["status"], "open");
+        // assets cover the units, but the wallet holds less than the books' cash: not solvent
+        let short = verdict(s, 99_999);
+        assert!(!passed(&short, None));
+        assert!(render_text(&a, &b, &short, None).contains("NOT SOLVENT"));
     }
 
     #[test]
@@ -520,16 +668,63 @@ mod tests {
         assert!(!inclusion(&body, &view).unwrap().included);
         let lied = body.replace("\"units\":2000", "\"units\":2001");
         assert!(!inclusion(&lied, &view).unwrap().included);
-        let s = Some(Solvency {
-            cash_zat: 1,
-            open_zat: 0,
-            overdue_zat: 0,
-            assets_zat: 9_000,
-            liabilities_zat: 6_000,
-            period: 4,
-            solvent: true,
-        });
+        let s = verdict(
+            Solvency {
+                cash_zat: 1,
+                open_zat: 0,
+                overdue_zat: 0,
+                assets_zat: 9_000,
+                liabilities_zat: 6_000,
+                period: 4,
+                solvent: true,
+            },
+            1,
+        );
         let not = inclusion(&lied, &view).unwrap();
         assert!(!passed(&s, Some(&not)));
+    }
+
+    #[test]
+    fn the_books_come_with_the_path() {
+        let d = "d1".repeat(32);
+        let w = "e2".repeat(32);
+        let body = json!({ "period": 2, "books": { "deposits": [d], "payouts": [w] } });
+        assert_eq!(
+            path_books(&body.to_string()),
+            Some(FundBooks {
+                deposits: vec![d.clone()],
+                payouts: vec![w.clone()]
+            })
+        );
+        let message = json!({ "type": "fund.merkle_path", "body": body });
+        assert!(path_books(&message.to_string()).is_some());
+        // a path from a close made before the books: inclusion only, no verdict
+        assert_eq!(path_books(&json!({ "period": 1 }).to_string()), None);
+        assert_eq!(
+            path_books(&json!({ "books": { "deposits": ["nothex"], "payouts": [] } }).to_string()),
+            None
+        );
+        let a = p(&["--ufvk", "uviewtest1qqqq", "--manager-pk", &"ab".repeat(32)])
+            .unwrap()
+            .unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut view = FundView {
+            cash_zat: 0,
+            receivables: vec![],
+            root: None,
+            ignored_roots: 0,
+        };
+        view.root = Some((
+            jitsuin_core::LiabilityRoot::sign(&key, 1, [1; 32], 50_000),
+            "t".into(),
+        ));
+        let b = books(view, 300_000_000);
+        let j = render_json(&a, &b, &None, None);
+        assert!(j["verdict"].is_null());
+        assert!(j["no_verdict"]
+            .as_str()
+            .unwrap()
+            .starts_with("no fund books"));
+        assert!(render_text(&a, &b, &None, None).contains("Verdict  NONE"));
     }
 }
