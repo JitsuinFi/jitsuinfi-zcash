@@ -60,14 +60,19 @@ fn fund_main(args: &[String], devtool_env: Option<&str>) -> (i32, String, String
         Ok(None) => return (EXIT_OK, fund::USAGE.to_string(), String::new()),
         Ok(Some(a)) => a,
     };
-    match fund::run(&a) {
+    // the path file carries the member's units and, since 2026-10-25, the fund's books
+    let path = match a.path.as_ref().map(|p| {
+        std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))
+    }) {
+        Some(Err(e)) => return (EXIT_ERROR, String::new(), format!("error: {e}\n")),
+        Some(Ok(j)) => Some(j),
+        None => None,
+    };
+    let books = path.as_deref().and_then(fund::path_books);
+    match fund::run(&a, books.as_ref()) {
         Err(e) => (EXIT_ERROR, String::new(), format!("error: {e}\n")),
-        Ok((view, verdict)) => {
-            let inc = match a.path.as_ref().map(|p| {
-                std::fs::read_to_string(p)
-                    .map_err(|e| format!("cannot read {}: {e}", p.display()))
-                    .and_then(|j| fund::inclusion(&j, &view))
-            }) {
+        Ok((b, verdict)) => {
+            let inc = match path.as_deref().map(|j| fund::inclusion(j, &b.view)) {
                 Some(Err(e)) => return (EXIT_ERROR, String::new(), format!("error: {e}\n")),
                 Some(Ok(i)) => Some(i),
                 None => None,
@@ -75,7 +80,7 @@ fn fund_main(args: &[String], devtool_env: Option<&str>) -> (i32, String, String
             let out = if a.json {
                 let mut s = serde_json::to_string_pretty(&fund::render_json(
                     &a,
-                    &view,
+                    &b,
                     &verdict,
                     inc.as_ref(),
                 ))
@@ -83,7 +88,7 @@ fn fund_main(args: &[String], devtool_env: Option<&str>) -> (i32, String, String
                 s.push('\n');
                 s
             } else {
-                fund::render_text(&a, &view, &verdict, inc.as_ref())
+                fund::render_text(&a, &b, &verdict, inc.as_ref())
             };
             let code = if fund::passed(&verdict, inc.as_ref()) {
                 EXIT_OK
