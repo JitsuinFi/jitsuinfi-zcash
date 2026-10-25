@@ -46,7 +46,8 @@ USAGE:
     --manager-pk <HEX>      Manager's public key (64 hex); only its receipts and roots count.
     --birthday <HEIGHT>     First block of the account. Required when the wallet is created.
     --grace-days <DAYS>     Days after the due date before a receivable is overdue [default 7]
-    --haircut <PERCENT>     Share of an overdue receivable written off [default 100]
+    --haircut <PERCENT>     Share of an overdue receivable written off [default 100, as the
+                            fund's node values it; the member page refuses another value]
     --today <DAYS>          Date as days since 1970-01-01 [default: today]
     --path <FILE>           The fund.merkle_path you saved from the member page: checks that
                             your units are under the latest root on chain, and carries the

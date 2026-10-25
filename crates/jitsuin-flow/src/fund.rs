@@ -4,7 +4,9 @@
 //! - **Cash:** the account balance (the viewing key sees spends too).
 //! - **Receivables:** every advance the account paid with a receivable note (N, face value, due
 //!   date) and an advance receipt signed by the manager, minus repayments received for that N.
-//!   Past the due date plus grace, the remainder is overdue and counted with a haircut.
+//!   Past the due date plus grace, the remainder is overdue and counted with a haircut: 100 % in
+//!   the JitsuinFi node and `jitsuin fund` (user decision 2026-10-25), so it counts 0 until its
+//!   repayment is on chain.
 //! - **Liabilities:** the total of the latest liability root signed by the manager. That the total
 //!   includes every member's deposit is checked against the Merkle sum tree (HNK-15.T1).
 //!
@@ -720,6 +722,45 @@ mod tests {
         rich_books.view.cash_zat = 120_000;
         let s = book_solvency(&rich_books, &policy()).unwrap();
         assert!(s.solvency.solvent && !s.wallet_covers && !s.solvent);
+    }
+
+    #[test]
+    fn an_overdue_fund_advance_counts_zero_until_its_repayment_is_cash() {
+        let m = key(3);
+        let pk = m.verifying_key().to_bytes();
+        let mut txs = vec![
+            deposit("d1", 1, 100_000),
+            tx(
+                "a1",
+                2,
+                vec![out(1, 80_000, false, &advance(&m, 4, 80_000, 90_000, 50))],
+            ),
+            tx("r1", 3, vec![out(0, 10_000, true, &root(&m, 1, 100_000))]),
+        ];
+        let books = FundBooks {
+            deposits: vec!["d1".into()],
+            payouts: vec![],
+        };
+        let at = |txs: &[WalletTx], today: u32| {
+            let v = fund_view(txs, 1_000_000, &pk, today, 7);
+            book_solvency(&fund_books(&v, txs, &books), &policy()).unwrap()
+        };
+        assert_eq!(at(&txs, 40).solvency.assets_zat, 110_000);
+        // overdue and unpaid: written off in full
+        let late = at(&txs, 100);
+        assert_eq!(
+            (late.solvency.overdue_zat, late.solvency.assets_zat),
+            (0, 20_000)
+        );
+        assert!(!late.solvent);
+        // its repayment on chain comes back as cash
+        txs.push(tx("p1", 4, vec![out(0, 90_000, true, &repay(4, 90_000))]));
+        let paid = at(&txs, 100);
+        assert_eq!(
+            (paid.solvency.cash_zat, paid.solvency.assets_zat),
+            (110_000, 110_000)
+        );
+        assert!(paid.solvent);
     }
 
     #[test]
