@@ -4,6 +4,8 @@ Zcash protocol and integration layer for **JitsuinFi**, private invoice financin
 
 > Zcash stops double-spending. JitsuinFi stops double-financing.
 
+**Live:** [jitsuinfi.vercel.app](https://jitsuinfi.vercel.app) (app at [/app](https://jitsuinfi.vercel.app/app), verifier at [/verify](https://jitsuinfi.vercel.app/verify)) · financier console demo: <https://jitsuinfi-console-demo.vercel.app/console> · other repos: [jitsuinfi-node](https://github.com/JitsuinFi/jitsuinfi-node), [jitsuinfi-frontend](https://github.com/JitsuinFi/jitsuinfi-frontend), [jitsuinfi-backend](https://github.com/JitsuinFi/jitsuinfi-backend). Testnet txids of deals run through the live app: [step 6](#for-judges-verify-the-testnet-board) below.
+
 No server, no admin, no login: the registry is one Zcash address and a viewing key we published on purpose. Before paying, any lender looks up an invoice's fingerprint on that board and learns only whether it was already financed.
 
 **What it does not stop.** A fake invoice that the buyer itself co-signs is out of scope: the buyer's signature is real, so the board sees a new invoice. Nor does it stop one delivery split into two invoices the buyer both signs, or a financier that skips the board. Credit diligence still applies.
@@ -27,7 +29,7 @@ The registry board is a receive-only shielded account on Zcash testnet. Its unif
 | Birthday (first block of the board) | `4508703` |
 | Double-financing proof | [`examples/testnet/proof-tes-inv-0003.txt`](examples/testnet/proof-tes-inv-0003.txt) |
 | Exhibit A (the same double signature without the invoice) | [`examples/testnet/exhibit-tes-inv-0003.txt`](examples/testnet/exhibit-tes-inv-0003.txt) |
-| Board snapshot | [`examples/testnet/board-snapshot.json`](examples/testnet/board-snapshot.json), entries up to block 4511024, captured 2026-10-20 |
+| Board snapshot | [`examples/testnet/board-snapshot.json`](examples/testnet/board-snapshot.json), entries up to block 4511024, captured 2026-10-20. The live board has grown since (55 entries, tip 4547279, on 2026-10-27); the snapshot stays fixed so CI can compare output byte for byte. |
 | Financier console, demo | <https://jitsuinfi-console-demo.vercel.app/console>: a sandbox testnet node; create a passkey, no invite, and see the sealed mailbox and the deal pipeline. Nothing there moves money. |
 
 **1. Scan the live board and check the proof.** From the repository root:
@@ -88,7 +90,7 @@ docker run --rm jitsuin index --board examples/testnet/board-snapshot.json
 
 They print exactly [`examples/testnet/expected-output.txt`](examples/testnet/expected-output.txt) and [`examples/testnet/expected-index.txt`](examples/testnet/expected-index.txt); `cargo test` in CI checks both files byte for byte. Add `--save-board mine.json` to the live scan in step 1 to write your own snapshot; it holds the same entries, plus any posted after the capture.
 
-**4. In the browser:** open the Verify page at <https://jitsuinfi.vercel.app/verify>, paste the proof text, choose the board snapshot (or your own from step 3) as board data and press Verify. The page runs the same checks compiled to WebAssembly, in the page, and gives the same verdict.
+**4. In the browser:** open <https://jitsuinfi.vercel.app/verify>, press "Use Case File #0417's Exhibit A" or paste a proof, bundle or Exhibit A, and press "Hand it to the registry". The page reads the live board by itself (or a board file you add) and runs the same checks compiled to WebAssembly, in the page.
 
 **5. A whole deal, end to end.** On 2026-10-22 one test invoice backed by a real PDF, `TES-INV-E2E1-77210` (100 000 zat, due in 30 days), went through the full cycle on testnet: the buyer signed the invoice bytes, the financier registered N, the supplier, the buyer and the financier sealed the assignment letter, the financier paid the 90 000 zat advance, the buyer repaid the financier directly and the settled entry closed the deal. A second financier was then offered the same invoice and caught it. The files are in [`examples/testnet/e2e-tes-inv-e2e1/`](examples/testnet/e2e-tes-inv-e2e1/):
 
@@ -106,6 +108,20 @@ docker run --rm -v jitsuin-board:/work/wallet-board-testnet jitsuin verify --ufv
 ```
 
 It ends with `=> DOUBLE FINANCING PROVEN`, `=> DEAL VERIFIED` and `Result   PASS (5 check(s), 0 failed)`; the full output is [`verify-output.txt`](examples/testnet/e2e-tes-inv-e2e1/verify-output.txt). The bundle's invoice carries `terms_hash`, the SHA-256 of [`invoice.pdf`](examples/testnet/e2e-tes-inv-e2e1/invoice.pdf), and its assignment letter the hash of [`letter.pdf`](examples/testnet/e2e-tes-inv-e2e1/letter.pdf). The program that ran the cycle is [`crates/jitsuin-flow/examples/testnet_cycle.rs`](crates/jitsuin-flow/examples/testnet_cycle.rs); it needs two funded testnet wallets and the board's watch-only wallet, and its header says how to run it.
+
+**6. Through the live web app and console (production, testnet).** These deals ran on <https://jitsuinfi.vercel.app>, the financier console and the hosted financier node. `TES-INV-JUDGE3-9161` was clicked through from the installed app, with no typed URL; the other two show the console stopping a deal whose invoice is already on the board:
+
+| Deal | Step | Testnet txid |
+|---|---|---|
+| `TES-INV-JUDGE3-9161` (2026-10-27) | Register entry (block 4545839) | `35ed74696145f5838188dffe49ef9a51cd5ae054f3de97044ec8855ed859bd55` |
+| | Advance, approved with the console passkey | `1de9e9473d3e6b01f9037820908bca77a20891f203d95fe372886abb8343f48f` |
+| | Repayment by the buyer's ZIP-321 QR | `668d0e0f3cca380dff846b936390a9526992de717260012fac6d0efd316d331a` |
+| | Settled entry (block 4545868) | `208d9d573bc39e3e80d9771eb22695b5d666622576bffb790369c06f619735ba` |
+| `TES-INV-DBL-24689` (2026-10-25) | First entry, production node (block 4540314) | `a2f46ffdeebef1e0fa4de74b8b2bb26083a48cb9528a72ab7ac26914a7103659` |
+| | Second financier's entry (block 4540315): the console stops the deal as `DoubleFinanced` | `a42152b0ed19b5f54437ddfe61bc44b811dd3d405e78b863f3b060f237709188` |
+| `TES-INV-ALR-71337` (2026-10-25) | Earlier entry (block 4540347): the console stops as `AlreadyFinanced` before paying | `25a78d45bc2ab59a5f48fff8b594cdc0bdc9cf1e218a36bd7ae8cbcb51bf75b5` |
+
+The board entries read with the board UFVK above (`jitsuin verify --ufvk …` lists them; the hosted node also serves the board it scans at <https://financier-node-production.up.railway.app/node/board>). The advance and the repayment are shielded payments, so an explorer shows only that they exist.
 
 Without Docker, see [With cargo](#with-cargo) below and run the same commands with `jitsuin` instead of `docker run … jitsuin`.
 
@@ -142,7 +158,7 @@ flowchart LR
     wallet --> flow
     board --> wasm
     wasm --> fe[jitsuinfi-frontend<br/>web app]
-    flow --> be[financier backend]
+    flow --> be[jitsuinfi-node<br/>financier node + console]
     board -. lightwalletd .-> zec[(Zcash testnet<br/>Ironwood pool)]
     wallet -. lightwalletd .-> zec
 ```
