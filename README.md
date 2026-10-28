@@ -141,6 +141,79 @@ flowchart LR
     classDef seal fill:#7E2A53,stroke:#461D3A,color:#FCFCFE,stroke-width:2px
 ```
 
+## Flow in this repo (protocol and CLI)
+
+The crates are pure functions plus a scanner: `jitsuin-core` decides what is valid, `jitsuin-board` decides what the board says, `jitsuin-flow` decides what a role does next.
+
+**Sequence: `jitsuin verify` checks a proof against the live board**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor J as Judge / auditor
+    participant CLI as jitsuin-cli
+    participant WL as jitsuin-wallet (zcash-devtool)
+    participant LW as lightwalletd (testnet)
+    participant BD as jitsuin-board
+    participant CO as jitsuin-core
+    J->>CLI: jitsuin verify --ufvk … --birthday 4508703 --proof p.txt
+    CLI->>WL: open or create the watch-only wallet
+    WL->>LW: sync compact blocks from the birthday
+    LW-->>WL: notes and memos to the board address
+    WL-->>BD: memos with txid, height, tx index, output
+    BD->>CO: parse each memo as a board entry (invalid ones listed, ignored)
+    BD->>BD: put entries in board order, group by N
+    CLI->>CO: parse the proof: invoice, two entries, buyer and supplier keys
+    CO->>CO: buyer signature on the canonical bytes, N = H(invoice)
+    CO->>CO: supplier signed N for two different financiers
+    CLI->>BD: find both entries on the board, check their order
+    CLI-->>J: PASS / FAIL per check, exit 0 / 1 / 2
+```
+
+**DFD: from an invoice to a verdict**
+
+```mermaid
+flowchart LR
+    BUY[Buyer]:::human
+    SUP[Supplier]:::human
+    FIN[Financier]:::human
+    ANY[Anyone<br/>judge, outsider]:::human
+    ZC[Zcash testnet<br/>board address]:::zcash
+    P1((1.0<br/>Canonical invoice,<br/>N = H)):::seal
+    P2((2.0<br/>Sign and seal<br/>Jitsuin Seal)):::seal
+    P3((3.0<br/>Board entry,<br/>commitment)):::sys
+    P4((4.0<br/>Scan, order,<br/>lookup N)):::zcash
+    P5((5.0<br/>Settle,<br/>buyer history)):::sys
+    P6((6.0<br/>Verify bundle,<br/>proof, index)):::sys
+    D1[(Board wallet<br/>watch-only, UFVK)]:::store
+    D2[(Board snapshot<br/>--save-board JSON)]:::store
+    D3[(Deal bundle, proof,<br/>Exhibit A files)]:::store
+    SUP -- invoice fields, PDF hash --> P1
+    P1 -- canonical bytes, N --> P2
+    BUY -- buyer signature --> P2
+    SUP -- supplier seal --> P2
+    P2 -- signed entry --> P3
+    FIN -- commitment, classes --> P3
+    P3 -- shielded memo --> ZC
+    ZC -- memos --> D1
+    D1 --> P4
+    P4 -- board --> D2
+    P4 -- found / not found --> FIN
+    FIN -- repayment, settled entry --> P5
+    P5 -- settled memo --> ZC
+    P5 -- bundle --> D3
+    ANY -- files --> P6
+    D3 --> P6
+    D2 -- board --> P6
+    P6 -- PASS / FAIL, rate classes --> ANY
+    classDef human fill:#FCFCFE,stroke:#7E2A53,color:#461D3A,stroke-width:2px
+    classDef zcash fill:#020D2F,stroke:#1D97F1,color:#C4C7F2,stroke-width:2px
+    classDef sys fill:#F6F5FC,stroke:#032C7D,color:#020D2F,stroke-width:2px
+    classDef seal fill:#7E2A53,stroke:#461D3A,color:#FCFCFE,stroke-width:2px
+    classDef store fill:#ECD0EC,stroke:#7E2A53,color:#461D3A,stroke-width:1px
+```
+<sub>DFD legend: rectangles are external entities, circles are processes, cylinders are data stores; arrows carry the named data.</sub>
+
 No server, no admin, no login: the registry is one Zcash address and a viewing key we published on purpose. Before paying, any lender looks up an invoice's fingerprint on that board and learns only whether it was already financed.
 
 **What it does not stop.** A fake invoice that the buyer itself co-signs is out of scope: the buyer's signature is real, so the board sees a new invoice. Nor does it stop one delivery split into two invoices the buyer both signs, or a financier that skips the board. Credit diligence still applies.
