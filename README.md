@@ -1,10 +1,145 @@
-# jitsuinfi-zcash
+<p align="center">
+  <a href="https://jitsuinfi.vercel.app"><img src=".github/readme/banner.svg" alt="JitsuinFi: Zcash stops double-spending. JitsuinFi stops double-financing." width="100%"></a>
+</p>
 
-Zcash protocol and integration layer for **JitsuinFi**, private invoice financing without double financing.
+<p align="center">
+  <img alt="Zcash testnet, Ironwood pool" src="https://img.shields.io/badge/Zcash-testnet%20%C2%B7%20Ironwood%20pool-032C7D?style=flat-square">
+  <img alt="ZECATHON 2026, Private Markets" src="https://img.shields.io/badge/ZECATHON%202026-Private%20Markets-7E2A53?style=flat-square">
+  <img alt="License MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-461D3A?style=flat-square">
+  <img alt="Rust 1.99.1" src="https://img.shields.io/badge/Rust-1.99.1-461D3A?style=flat-square&logo=rust&logoColor=white">
+  <img alt="WebAssembly" src="https://img.shields.io/badge/browser-WebAssembly-0841C9?style=flat-square&logo=webassembly&logoColor=white">
+</p>
 
-> Zcash stops double-spending. JitsuinFi stops double-financing.
+<p align="center">
+  <b>The Zcash protocol and integration layer of JitsuinFi: private invoice financing without double financing.</b>
+</p>
 
-**Live:** [jitsuinfi.vercel.app](https://jitsuinfi.vercel.app) (app at [/app](https://jitsuinfi.vercel.app/app), verifier at [/verify](https://jitsuinfi.vercel.app/verify)) · financier console demo: <https://jitsuinfi-console-demo.vercel.app/console> · other repos: [jitsuinfi-node](https://github.com/JitsuinFi/jitsuinfi-node), [jitsuinfi-frontend](https://github.com/JitsuinFi/jitsuinfi-frontend), [jitsuinfi-backend](https://github.com/JitsuinFi/jitsuinfi-backend). Testnet txids of deals run through the live app: [step 6](#for-judges-verify-the-testnet-board) below.
+<p align="center">
+  <a href="https://jitsuinfi.vercel.app"><b>Landing</b></a> ·
+  <a href="https://jitsuinfi.vercel.app/app"><b>App</b></a> ·
+  <a href="https://jitsuinfi.vercel.app/try"><b>Try to double-finance</b></a> ·
+  <a href="https://jitsuinfi.vercel.app/verify"><b>Verify</b></a> ·
+  <a href="https://jitsuinfi-console-demo.vercel.app/console"><b>Console demo</b></a> ·
+  <a href="https://youtu.be/RB9hKSLarJo"><b>2-min video</b></a>
+</p>
+
+<p align="center">
+  <a href="https://youtu.be/RB9hKSLarJo"><img src=".github/readme/video-thumb.jpg" alt="Watch the 2-minute demo on YouTube" width="760"></a>
+  <br><sub>Two minutes: the idea, a double-financing attempt caught live on the testnet board, and a whole deal from supplier to settlement.</sub>
+</p>
+
+## The idea in one breath
+
+A supplier sells an invoice to a financier for cash today. The classic fraud is selling the **same invoice twice**. Registries that stop it either see every deal (a central operator) or publish who supplies whom (a public chain). **JitsuinFi does neither.** The buyer seals the invoice with a passkey; only its fingerprint **N** goes on a public board, one shielded Zcash address whose viewing key is published on purpose. Before paying, any financier asks the board one question, *was N ever registered?*, and learns nothing else.
+
+<p align="center"><img src=".github/readme/route.svg" alt="The deal route: 照 sent to the buyer, 署 buyer signs, 登 public record, 印 financing letter sealed, 金 advance, 済 settled" width="100%"></p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src=".github/readme/try.webp" alt="偽 then 重, on the live board" width="100%"><br><b>偽 then 重, on the live board</b><br><sub>Change one digit and the buyer's seal breaks (偽). Offer it as it is and the testnet board already holds its fingerprint (重).</sub></td>
+    <td width="50%" valign="top"><img src=".github/readme/exhibit.webp" alt="Exhibit A, portable proof" width="100%"><br><b>Exhibit A, portable proof</b><br><sub>The second financier takes home the supplier's double signature, then anyone checks it on /verify, in the browser.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src=".github/readme/verify.webp" alt="真, a real settled deal" width="100%"><br><b>真, a real settled deal</b><br><sub>A production testnet deal handed to /verify on a phone: every seal checks out, its public record and settled entry are on the board.</sub></td>
+    <td width="50%" valign="top"><img src=".github/readme/outsider.webp" alt="What outsiders see" width="100%"><br><b>What outsiders see</b><br><sub>A fingerprint and ciphertext. No parties, no amounts; rate classes appear only from k = 5 invoices.</sub></td>
+  </tr>
+</table>
+
+## How it works
+
+**Who talks to whom.** Every arrow that crosses the relay carries ciphertext only; the chain carries a fingerprint, ciphertext and shielded payments.
+
+```mermaid
+flowchart TB
+    S([Supplier]):::human
+    B([Buyer<br/>passkey]):::human
+    F([Financier<br/>node + console]):::human
+    M([Fund member]):::human
+    O([Anyone<br/>auditor, judge, outsider]):::human
+    subgraph J [JitsuinFi]
+      W[Web app<br/>jitsuin-wasm in the page]:::sys
+      R[Relay<br/>sealed mailboxes]:::sys
+      N[Financier node<br/>wallet, board watch]:::sys
+    end
+    Z[(Zcash testnet<br/>public board: one shielded<br/>address, viewing key published)]:::zcash
+    S -- invoice, offer, seals --> W
+    B -- signature, seal, ZIP-321 repayment --> W
+    W <-- ciphertext only --> R
+    R <-- ciphertext only --> N
+    F -- passkey approvals --> N
+    N -- public record, advance, settled --> Z
+    M -- deposits, units --> N
+    O -- reads N and ciphertext --> Z
+    O -- checks bundles and proofs --> W
+    classDef human fill:#FCFCFE,stroke:#7E2A53,color:#461D3A,stroke-width:2px
+    classDef zcash fill:#020D2F,stroke:#1D97F1,color:#C4C7F2,stroke-width:2px
+    classDef sys fill:#F6F5FC,stroke:#032C7D,color:#020D2F,stroke-width:2px
+    classDef seal fill:#7E2A53,stroke:#461D3A,color:#FCFCFE,stroke-width:2px
+```
+
+**One deal, end to end** (the app shows it as the route above):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor S as Supplier
+    actor B as Buyer
+    participant F as Financier node
+    participant R as Public board (Zcash testnet)
+    S->>B: 照 invoice, sealed to the buyer's inbox
+    B->>S: 署 buyer signs the exact bytes (one passkey touch)
+    S->>F: sealed offer (advance asked)
+    F->>R: was N = H(invoice) ever registered?
+    R-->>F: no, and nothing else
+    F->>R: 登 public record (shielded memo)
+    F->>S: financing letter
+    S->>F: 印 supplier seal
+    B->>F: 印 buyer seal
+    F->>S: 金 advance + financier seal, one shielded tx (passkey-approved)
+    B->>F: repayment from the buyer's own wallet (ZIP-321 slip)
+    F->>R: 済 settled entry
+    Note over R: Outsiders see a fingerprint and ciphertext.<br/>A second financier finds N on the board: 重, plus Exhibit A.
+```
+
+**How a second financing is caught:**
+
+```mermaid
+flowchart TD
+    A[Same invoice offered<br/>to financier B]:::human --> C{Buyer's seal valid<br/>for these bytes?}
+    C -- no: one digit changed --> X[偽 forged seal<br/>refused]:::seal
+    C -- yes --> L{N already on<br/>the public board?}
+    L -- no --> OK[register, finance once]:::sys
+    L -- yes --> D[重 already pledged<br/>refused before paying]:::seal
+    D --> E[Exhibit A: the supplier's key<br/>signed N for two financiers]:::zcash
+    E --> V[anyone checks it on /verify<br/>or with jitsuin verify]:::sys
+    classDef human fill:#FCFCFE,stroke:#7E2A53,color:#461D3A,stroke-width:2px
+    classDef zcash fill:#020D2F,stroke:#1D97F1,color:#C4C7F2,stroke-width:2px
+    classDef sys fill:#F6F5FC,stroke:#032C7D,color:#020D2F,stroke-width:2px
+    classDef seal fill:#7E2A53,stroke:#461D3A,color:#FCFCFE,stroke-width:2px
+```
+
+**The crates:**
+
+```mermaid
+flowchart LR
+    core[jitsuin-core<br/>formats, signatures, seals] --> board[jitsuin-board<br/>scanner, lookup, history]
+    core --> wasm[jitsuin-wasm<br/>browser]
+    board --> flow[jitsuin-flow<br/>financier, watchdog, fund]
+    wallet[jitsuin-wallet<br/>zcash-devtool] --> board
+    wallet --> flow
+    board --> wasm
+    wasm --> fe[jitsuinfi-frontend<br/>web app]
+    flow --> be[jitsuinfi-node<br/>financier node + console]
+    board -. lightwalletd .-> zec[(Zcash testnet<br/>Ironwood pool)]
+    wallet -. lightwalletd .-> zec
+    class core,board,wallet,flow,wasm sys
+    class fe,be human
+    class zec zcash
+    classDef human fill:#FCFCFE,stroke:#7E2A53,color:#461D3A,stroke-width:2px
+    classDef zcash fill:#020D2F,stroke:#1D97F1,color:#C4C7F2,stroke-width:2px
+    classDef sys fill:#F6F5FC,stroke:#032C7D,color:#020D2F,stroke-width:2px
+    classDef seal fill:#7E2A53,stroke:#461D3A,color:#FCFCFE,stroke-width:2px
+```
 
 No server, no admin, no login: the registry is one Zcash address and a viewing key we published on purpose. Before paying, any lender looks up an invoice's fingerprint on that board and learns only whether it was already financed.
 
@@ -125,49 +260,14 @@ The board entries read with the board UFVK above (`jitsuin verify --ufvk …` li
 
 Without Docker, see [With cargo](#with-cargo) below and run the same commands with `jitsuin` instead of `docker run … jitsuin`.
 
-## How it works
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant S as Supplier
-    participant B as Buyer
-    participant F as Financier
-    participant R as Registry board<br/>(public viewing key)
-    S->>B: canonical invoice (per-invoice key)
-    B->>S: buyer signature (key from passkey)
-    F->>R: check N = H(invoice): not registered
-    S->>F: entry signed for F's commitment
-    F->>R: register entry (shielded memo)
-    R-->>F: confirmed, first valid entry
-    F->>S: assignment letter
-    S->>B: supplier seal
-    B->>F: buyer seal (acknowledges the assignment)
-    F->>S: advance + receipt + financier seal (one shielded tx)
-    B->>F: repayment + receipt + claim (ZIP-321 QR)
-    F->>R: settled entry: buyer + financier signatures
-    Note over R: Outsiders see hashes only.<br/>A second financier finds N and gets<br/>a proof that the supplier signed twice.
-```
-
-```mermaid
-flowchart LR
-    core[jitsuin-core<br/>formats, signatures, seals] --> board[jitsuin-board<br/>scanner, lookup, history]
-    core --> wasm[jitsuin-wasm<br/>browser]
-    board --> flow[jitsuin-flow<br/>financier, watchdog, fund]
-    wallet[jitsuin-wallet<br/>zcash-devtool] --> board
-    wallet --> flow
-    board --> wasm
-    wasm --> fe[jitsuinfi-frontend<br/>web app]
-    flow --> be[jitsuinfi-node<br/>financier node + console]
-    board -. lightwalletd .-> zec[(Zcash testnet<br/>Ironwood pool)]
-    wallet -. lightwalletd .-> zec
-```
-
 ## Specification
 
 [Shielded Receivable Registry](docs/zip-shielded-receivable-registry.md): ZIP-style specification of every format and rule, with test vectors asserted by the unit tests.
 
 ## Build the browser package
+
+<details>
+<summary>Open the reference</summary>
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -178,7 +278,12 @@ wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/ji
 
 `pkg/` then holds `jitsuin_wasm.js` and `jitsuin_wasm_bg.wasm` for the frontend. Secrets passed to it (the buyer's master secret, a supplier key) stay in the page; the package does no network I/O.
 
+</details>
+
 ## Verify the board (`jitsuin verify`)
+
+<details>
+<summary>Open the reference</summary>
 
 Anyone can check the registry board without a spending key and without ZEC: the board's viewing key only reads. `jitsuin verify` lists every entry in board order, then checks each double-signature proof (`--proof`), Exhibit A (`--exhibit`, the proof without the invoice: shareable, it shows the key signed N twice on the board but not which invoice) and verification bundle (`--bundle`) against the board. Exit status: `0` every check holds, `1` a check failed, `2` usage, input or network error.
 
@@ -211,7 +316,12 @@ jitsuin verify --board examples/verify/board-sample.json --proof examples/verify
 
 `jitsuin verify --help` lists every option (`--wallet-dir`, `--devtool` or `$JITSUIN_DEVTOOL`, `--lightwalletd`, `--save-board` to write a snapshot after a live scan, `--json`).
 
+</details>
+
 ## Public rate index (`jitsuin index`)
+
+<details>
+<summary>Open the reference</summary>
 
 "Price public, participants private": each register entry carries a discount class and a tenor class, never an amount or a party. `jitsuin index` recomputes the index from the same board sources as `verify` (`--ufvk` or `--board`). Each invoice counts once, with its first entry in board order. A tenor class, and a discount class inside it, is shown only when it has at least **k = 5** invoices (`--k` can raise it, not lower it).
 
@@ -236,6 +346,10 @@ Expected output: [`examples/index/expected-output.txt`](examples/index/expected-
 
 Status: in development for ZECATHON 2026. Everything runs on Zcash testnet, in the Ironwood shielded pool (on mainnet, Ironwood is live since the NU6.3 upgrade of 28 July 2026).
 
+</details>
+
 ## License
+
+<p align="center"><img src=".github/readme/outro.webp" alt="Zcash stops double-spending. JitsuinFi stops double-financing." width="640"></p>
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option. Unless you explicitly state otherwise, any contribution you submit for inclusion in this work, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.
