@@ -325,6 +325,11 @@ It ends with `=> DOUBLE FINANCING PROVEN`, `=> DEAL VERIFIED` and `Result   PASS
 | | Advance, approved with the console passkey | `1de9e9473d3e6b01f9037820908bca77a20891f203d95fe372886abb8343f48f` |
 | | Repayment by the buyer's ZIP-321 QR | `668d0e0f3cca380dff846b936390a9526992de717260012fac6d0efd316d331a` |
 | | Settled entry (block 4545868) | `208d9d573bc39e3e80d9771eb22695b5d666622576bffb790369c06f619735ba` |
+| `TES-INV-MOB5-23913` (2026-10-28, phone run) | Public record | `b72a5bedc3842051acaec418db8d7236b7ff64894613e3d7263aca5072087cb1` |
+| | Advance, approved with the console passkey | `1405c169793c207b11ac70939b255e43648f4ad5bc63b7672b6d1a2e83ed5f0c` |
+| | Repayment by the buyer's ZIP-321 slip | `c4834e0a72bc096426835e1989fdf214a507401954e8158c9c0129e9c2c60d45` |
+| | Settled entry | `7035b7547685dde5976aad140a585c62e332365d58249c053b4c3652b2242c95` |
+| `TES-INV-R6-63926` and `TES-INV-R6-63926-2` (2026-10-28) | Repeat invoices, same buyer and supplier: settled entries | `2cd44c59edaa5aeac4bc063882d6cb29160f09a737b17c2e76a011c925670485`, `e6cdc728914cee7dbc13aa1e918667356460c456516eb8908b68749acfbcd611` |
 | `TES-INV-DBL-24689` (2026-10-25) | First entry, production node (block 4540314) | `a2f46ffdeebef1e0fa4de74b8b2bb26083a48cb9528a72ab7ac26914a7103659` |
 | | Second financier's entry (block 4540315): the console stops the deal as `DoubleFinanced` | `a42152b0ed19b5f54437ddfe61bc44b811dd3d405e78b863f3b060f237709188` |
 | `TES-INV-ALR-71337` (2026-10-25) | Earlier entry (block 4540347): the console stops as `AlreadyFinanced` before paying | `25a78d45bc2ab59a5f48fff8b594cdc0bdc9cf1e218a36bd7ae8cbcb51bf75b5` |
