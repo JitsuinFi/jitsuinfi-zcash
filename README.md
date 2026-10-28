@@ -338,6 +338,30 @@ The board entries read with the board UFVK above (`jitsuin verify --ufvk …` li
 
 Without Docker, see [With cargo](#with-cargo) below and run the same commands with `jitsuin` instead of `docker run … jitsuin`.
 
+## Roadmap to mainnet
+
+Everything above runs on Zcash testnet today. This is the plan to mainnet. Durations are estimates, not commitments; phases 3 and 4 depend on people outside this team (a financier, legal and security reviewers).
+
+```mermaid
+flowchart LR
+  A["Now: testnet live<br/>protocol, board, node, relay,<br/>supplier / buyer / member apps, console"] --> B["1. Mainnet proof<br/>1-2 weeks"]
+  B --> C["2. Hardening<br/>3-6 weeks"]
+  C --> D["3. Closed pilot<br/>months 2-3"]
+  D --> E["4. Open network"]
+```
+
+| Phase | What happens | Estimate |
+|---|---|---|
+| **Now** | Testnet runs the full flow end to end: registration on the public board, advance, repayment, `settled`, double-financing detection (重) with portable proof, the financier console with its own wallet view, repeat invoices for the same buyer and supplier. Production end-to-end runs on phones and desktop settle on testnet. | Done |
+| **1. Mainnet proof** | A separate node (`NETWORK=main`), a mainnet board with its viewing key published, and a mainnet build of the app (`VITE_NETWORK=main`). One registration and one detected double-financing with a small amount (about 0.01 ZEC in total); the txids go in this README. Testnet stays up for the demo. | 1-2 weeks |
+| **2. Hardening** | Independent review of the specification and threat model, key backup and rotation, node monitoring, a lightwalletd of our own, repeated mainnet end-to-end runs. | 3-6 weeks |
+| **3. Closed pilot** | One real financier with a few suppliers and buyers, buyer KYC in the mandate, a legal review, a fund with a limited set of members. | Months 2-3 |
+| **4. Open network** | An open financier directory, the public rate index, USD-denominated invoices paid in shielded ZEC at the rate signed at payment time (with USDC in and out through shielded swaps), and Zcash features that are not on mainnet yet. | After the pilot |
+
+What changes at mainnet, and what does not: the network, the board address and viewing key, the node's wallet and the app build change. The protocol, the letter and seal formats, and Exhibit A do not. The money never sits in JitsuinFi: the node's wallet pays the advance and the network fees, the buyer repays from their own wallet, and the supplier pays nothing on chain.
+
+Not done yet: the independent security review, and any mainnet run. Today's production is testnet only.
+
 ## Specification
 
 [Shielded Receivable Registry](docs/zip-shielded-receivable-registry.md): ZIP-style specification of every format and rule, with test vectors asserted by the unit tests.
